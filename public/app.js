@@ -77,8 +77,9 @@ function initUpload() {
 
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.length) {
-      setFiles(Array.from(fileInput.files));
+      addFiles(Array.from(fileInput.files));
     }
+    fileInput.value = '';
   });
 
   dropzone.addEventListener('click', (e) => {
@@ -102,7 +103,7 @@ function initUpload() {
     e.preventDefault();
     dropzone.classList.remove('drag-over');
     if (e.dataTransfer?.files?.length) {
-      setFiles(Array.from(e.dataTransfer.files));
+      addFiles(Array.from(e.dataTransfer.files));
     }
   });
 
@@ -112,6 +113,23 @@ function initUpload() {
   });
 
   runBtn.addEventListener('click', startPipeline);
+}
+
+function fileKey(file) {
+  return `${file.name}\0${file.size}\0${file.lastModified}`;
+}
+
+function addFiles(incoming) {
+  const seen = new Set(selectedFiles.map(fileKey));
+  const next = selectedFiles.slice();
+  for (const file of incoming) {
+    if (!file) continue;
+    const key = fileKey(file);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(file);
+  }
+  setFiles(next);
 }
 
 function setFiles(files) {
@@ -142,7 +160,11 @@ function setFiles(files) {
     </li>`).join('');
 
   if (list) list.hidden = false;
-  if (clearBtn) clearBtn.hidden = false;
+  if (clearBtn) {
+    clearBtn.hidden = false;
+    const count = selectedFiles.length;
+    clearBtn.textContent = `Clear ${count} file${count === 1 ? '' : 's'}`;
+  }
   if (runBtn) runBtn.disabled = false;
   hideError();
 

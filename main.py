@@ -16,6 +16,8 @@ load_dotenv(".env.local", override=True)
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette._utils import AwaitableOrContextManagerWrapper
+from starlette.requests import Request
 
 from clients.settings import get_chat_model, get_provider
 
@@ -35,10 +37,26 @@ from rag.workbook_analyzer import analyze_multiple
 
 app = FastAPI(title="Estimator AI")
 
+# Starlette stops a form at 1,000 files. A project can include every sheet and drawing.
+def _form_without_file_cap(
+    self,
+    *,
+    max_files: float = float("inf"),
+    max_fields: float = float("inf"),
+    max_part_size: int = 1024 * 1024,
+):
+    return AwaitableOrContextManagerWrapper(
+        self._get_form(
+            max_files=max_files,
+            max_fields=max_fields,
+            max_part_size=max_part_size,
+        )
+    )
+
+
+Request.form = _form_without_file_cap  # type: ignore[method-assign]
+
 PUBLIC_DIR = Path(__file__).parent / "public"
-MAX_FILE_SIZE = 50 * 1024 * 1024
-MAX_TOTAL_UPLOAD_SIZE = 200 * 1024 * 1024
-MAX_FILE_COUNT = 20
 #: How often to tell the browser the run is still alive during a long agent step.
 PROGRESS_HEARTBEAT_SECONDS = 20
 
@@ -168,6 +186,24 @@ async def _emit_progress_heartbeat(session_id: str) -> None:
         pass
 
 
+def _unique_upload_name(name: str, seen: set[str]) -> str:
+    """Keep every file. A second file with the same name is stored under a numbered name."""
+    key = name.lower()
+    if key not in seen:
+        seen.add(key)
+        return name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    number = 2
+    while True:
+        candidate = f"{stem} ({number}){suffix}"
+        candidate_key = candidate.lower()
+        if candidate_key not in seen:
+            seen.add(candidate_key)
+            return candidate
+        number += 1
+
+
 @app.post("/api/estimate")
 async def estimate(
     sessionId: str = Form(...),
@@ -183,29 +219,18 @@ async def estimate(
         upload_list.append(file)
     if not upload_list:
         raise HTTPException(status_code=400, detail="No files uploaded.")
-    if len(upload_list) > MAX_FILE_COUNT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Too many files ({len(upload_list)}). Upload at most {MAX_FILE_COUNT} at a time.",
-        )
 
     uploads: list[tuple[str, bytes, str]] = []
     seen_names: set[str] = set()
     empty_files: list[str] = []
-    total_bytes = 0
 
     for upload in upload_list:
         if not upload.filename:
             continue
-        name = Path(upload.filename).name  # strip any directory component
+        name = _unique_upload_name(Path(upload.filename).name, seen_names)
         ext = Path(name).suffix.lower()
         contents = await upload.read()
 
-        if len(contents) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f'"{name}" exceeds the 50 MB limit.',
-            )
         if ext and ext not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
@@ -217,19 +242,6 @@ async def estimate(
         if not contents:
             empty_files.append(name)
             continue
-        if name.lower() in seen_names:
-            continue  # same file dropped twice — count it once
-        seen_names.add(name.lower())
-
-        total_bytes += len(contents)
-        if total_bytes > MAX_TOTAL_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Upload set is too large ({total_bytes / 1024 / 1024:.0f} MB). "
-                    f"Keep the total under {MAX_TOTAL_UPLOAD_SIZE // 1024 // 1024} MB."
-                ),
-            )
         uploads.append((name, contents, ext or ""))
 
     if not uploads:

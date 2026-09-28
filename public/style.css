@@ -461,6 +461,8 @@ h1, h2, h3, .logo-text, .section-title, .offer-headline, .ps-title, .detail-box-
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 320px;
+  overflow: auto;
 }
 .file-list li {
   display: flex;
