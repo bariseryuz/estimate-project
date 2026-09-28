@@ -1,0 +1,7 @@
+{
+  "venvPath": "/Users/bariseryuz/Desktop/Estimator ",
+  "venv": ".venv",
+  "pythonVersion": "3.9",
+  "typeCheckingMode": "basic",
+  "include": ["."]
+}

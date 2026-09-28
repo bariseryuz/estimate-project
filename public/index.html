@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESTIMATOR</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css?v=4" />
+</head>
+<body class="simple-ui">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-text">ESTIMATOR</span>
+      </div>
+      <span class="header-sub" id="headerStatus">Quantity survey</span>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- ── Upload Section ────────────────────────────────────────────────── -->
+    <section class="upload-section" id="uploadSection">
+      <h2 class="section-title">Project take-off</h2>
+      <p class="section-sub">Upload one project’s window matrix, quantity sheets, and bid workbook. The count and the price are read from those sheets.</p>
+
+      <ol class="steps-how steps-how-compact">
+        <li><strong>Submit</strong> the project workbooks</li>
+        <li><strong>Read</strong> the count, the sizes, and the bid from the sheets</li>
+        <li><strong>Review</strong> the take-off before it is sent</li>
+      </ol>
+
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload files">
+        <input type="file" id="fileInput" class="file-input-offscreen" multiple
+          accept=".pdf,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.txt,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <div class="dz-icon">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+            <path d="M24 32V16M24 16L18 22M24 16L30 22" stroke="#1c332c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M8 34C8 37.314 10.686 40 14 40H34C37.314 40 40 37.314 40 34" stroke="#94A3B8" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <p class="dz-text">Drag &amp; drop files here, or</p>
+        <label class="btn btn-secondary" id="browseBtn" for="fileInput">Browse Files</label>
+        <p class="dz-hint">Excel, PDF, or drawings · 50 MB each · one project per upload</p>
+      </div>
+
+      <ul class="file-list" id="fileList" hidden></ul>
+
+      <button type="button" class="btn btn-ghost btn-sm clear-files-btn" id="clearFileBtn" hidden>Clear files</button>
+
+      <button type="button" class="btn btn-primary btn-full" id="runBtn" disabled>
+        Estimate
+      </button>
+    </section>
+
+    <!-- ── Pipeline Section ──────────────────────────────────────────────── -->
+    <section class="pipeline-section" id="pipelineSection" hidden>
+      <div class="pipeline-header">
+        <div>
+          <h2 class="section-title pipeline-title">Working on your files…</h2>
+          <p class="pipeline-sub" id="pipelineStepLabel">Ready to start</p>
+        </div>
+        <div class="pipeline-timer" id="pipelineElapsed" aria-live="off">0:00</div>
+      </div>
+
+      <div class="pipeline-progress-wrap" aria-hidden="true">
+        <div class="pipeline-progress-track">
+          <div class="pipeline-progress-fill" id="pipelineProgressFill"></div>
+          <div class="pipeline-progress-glow" id="pipelineProgressGlow"></div>
+        </div>
+        <div class="pipeline-step-dots" id="pipelineStepDots">
+          <span class="step-dot" data-step="0" title="Vision"></span>
+          <span class="step-dot" data-step="1" title="Context"></span>
+          <span class="step-dot" data-step="2" title="Take-off"></span>
+          <span class="step-dot" data-step="3" title="Estimate"></span>
+          <span class="step-dot" data-step="4" title="Validate"></span>
+        </div>
+      </div>
+
+      <p class="pipeline-current-msg" id="pipelineCurrentMsg" aria-live="polite">Waiting for first agent…</p>
+
+      <!-- Document workspace: one agent at a time, with logic + live trace -->
+      <div class="doc-engine pipeline-complex" id="docEngine">
+        <div class="doc-tray" id="docTray">
+          <span class="doc-tray-label">Working set</span>
+          <div class="doc-tray-files" id="docTrayFiles"></div>
+          <p class="doc-tray-meta" id="docTrayMeta"></p>
+        </div>
+
+        <nav class="doc-engine-rail pipeline-complex" id="docEngineRail" aria-label="Pipeline steps"></nav>
+
+        <section class="doc-walker" id="docWalker" aria-label="Document walkthrough">
+          <div class="doc-walker-toolbar">
+            <span class="doc-walk-position" id="docWalkPosition">Document step — waiting</span>
+            <div class="doc-walker-nav">
+              <label class="doc-walk-follow">
+                <input type="checkbox" id="docWalkAutoFollow" checked /> Follow live
+              </label>
+              <button type="button" class="btn btn-ghost btn-sm" id="docWalkPrev" disabled aria-label="Previous document step">← Prev</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="docWalkNext" disabled aria-label="Next document step">Next →</button>
+            </div>
+          </div>
+          <div class="doc-walker-meta">
+            <span class="doc-walk-pill" id="docWalkAgent">—</span>
+            <span class="doc-walk-source" id="docWalkSource">—</span>
+          </div>
+          <h3 class="doc-walk-heading" id="docWalkHeading">Walk your project document step by step</h3>
+          <p class="doc-walk-caption" id="docWalkCaption">Each step shows what the engine is reading right now — file, sheet, page, or schedule excerpt.</p>
+          <pre class="doc-walker-body" id="docWalkExcerpt"></pre>
+          <div class="doc-walk-filmstrip" id="docWalkFilmstrip"></div>
+        </section>
+
+        <details class="doc-agent-reference">
+          <summary>Agent logic (reference)</summary>
+        <article class="doc-spotlight" id="docSpotlight" aria-live="polite">
+          <header class="doc-spotlight-head">
+            <span class="doc-spotlight-step" id="spotlightStep">—</span>
+            <h3 class="doc-spotlight-title" id="spotlightTitle">Waiting for files…</h3>
+            <p class="doc-spotlight-mission" id="spotlightMission"></p>
+          </header>
+
+          <div class="doc-spotlight-grid">
+            <section class="doc-panel doc-panel-logic">
+              <h4>How this step thinks</h4>
+              <ol class="doc-logic-list" id="spotlightLogic"></ol>
+              <dl class="doc-io">
+                <div><dt>Reads</dt><dd id="spotlightReads">—</dd></div>
+                <div><dt>Produces</dt><dd id="spotlightProduces">—</dd></div>
+              </dl>
+            </section>
+            <section class="doc-panel doc-panel-live">
+              <h4>Live in your document</h4>
+              <p class="doc-now" id="spotlightNow">—</p>
+              <ul class="doc-trace" id="spotlightTrace"></ul>
+            </section>
+          </div>
+
+          <section class="doc-outcome" id="spotlightOutcome" hidden>
+            <h4>What this agent concluded</h4>
+            <div class="doc-outcome-body" id="spotlightOutcomeBody"></div>
+          </section>
+        </article>
+        </details>
+      </div>
+
+      <details class="pipeline-advanced">
+        <summary>Technical agent list</summary>
+      <div class="pipeline-layout pipeline-complex">
+      <div class="pipeline">
+        <div class="pipeline-connector" id="pipelineConnector"></div>
+
+        <div class="agent-card" id="card-visionAnalyst" data-status="idle">
+          <div class="agent-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <path d="M2 11s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" stroke="currentColor" stroke-width="1.8"/>
+              <circle cx="11" cy="11" r="2.5" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <span class="agent-number">00</span>
+            <strong class="agent-name">Vision Analyst</strong>
+            <p class="agent-desc">Reads PDF/image pages, counts windows, matches catalogue SKUs.</p>
+            <p class="agent-log" id="log-visionAnalyst">Waiting…</p>
+          </div>
+          <div class="agent-badge" id="badge-visionAnalyst">
+            <span class="pulse-dot"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+            <span class="badge-x" aria-hidden="true">✕</span>
+          </div>
+        </div>
+
+        <div class="agent-card" id="card-contextParser" data-status="idle">
+          <div class="agent-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <circle cx="11" cy="11" r="9" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M7 11h8M11 7v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <span class="agent-number">01</span>
+            <strong class="agent-name">Context Parser</strong>
+            <p class="agent-desc">Parses document, maps abbreviations &amp; structure for take-off.</p>
+            <p class="agent-log" id="log-contextParser">Waiting…</p>
+          </div>
+          <div class="agent-badge" id="badge-contextParser">
+            <span class="pulse-dot"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+            <span class="badge-x" aria-hidden="true">✕</span>
+          </div>
+        </div>
+
+        <div class="agent-card" id="card-takeoffEngine" data-status="idle">
+          <div class="agent-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <rect x="3" y="5" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M7 9h8M7 13h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <span class="agent-number">02</span>
+            <strong class="agent-name">Take-off Engine</strong>
+            <p class="agent-desc">Counts every material, item, and quantity from the document.</p>
+            <p class="agent-log" id="log-takeoffEngine">Waiting…</p>
+          </div>
+          <div class="agent-badge" id="badge-takeoffEngine">
+            <span class="pulse-dot"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+            <span class="badge-x" aria-hidden="true">✕</span>
+          </div>
+        </div>
+
+        <div class="agent-card" id="card-estimationAgent" data-status="idle">
+          <div class="agent-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <path d="M4 18L8 12l4 3 3-6 3 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <span class="agent-number">03</span>
+            <strong class="agent-name">Estimation Agent</strong>
+            <p class="agent-desc">Applies unit costs, waste factors, overhead &amp; profit to produce a full estimate.</p>
+            <p class="agent-log" id="log-estimationAgent">Waiting…</p>
+          </div>
+          <div class="agent-badge" id="badge-estimationAgent">
+            <span class="pulse-dot"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+            <span class="badge-x" aria-hidden="true">✕</span>
+          </div>
+        </div>
+
+        <div class="agent-card" id="card-validation" data-status="idle">
+          <div class="agent-icon">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+              <path d="M6 11l4 4 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="11" cy="11" r="9" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <span class="agent-number">04</span>
+            <strong class="agent-name">The Validation</strong>
+            <p class="agent-desc">Cross-checks outputs against source, scores confidence, flags issues.</p>
+            <p class="agent-log" id="log-validation">Waiting…</p>
+          </div>
+          <div class="agent-badge" id="badge-validation">
+            <span class="pulse-dot"></span>
+            <span class="badge-check" aria-hidden="true">✓</span>
+            <span class="badge-x" aria-hidden="true">✕</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="pipeline-activity" id="pipelineActivityPanel">
+        <h3 class="activity-title">Live activity</h3>
+        <p class="activity-hint">Updates stream in as each agent runs.</p>
+        <ol class="activity-feed" id="activityFeed" aria-live="polite"></ol>
+      </aside>
+      </div>
+      </details>
+    </section>
+
+    <!-- ── Results Section ───────────────────────────────────────────────── -->
+    <section class="results-section" id="resultsSection" hidden>
+      <div class="results-header">
+        <h2 class="section-title">Results</h2>
+        <div class="results-actions">
+          <button type="button" class="btn btn-ghost btn-sm" id="exportCsvBtn">Download Excel list</button>
+          <button type="button" class="btn btn-ghost btn-sm advanced-only" id="exportJsonBtn">Export JSON</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="newEstimateBtn">New Estimate</button>
+        </div>
+      </div>
+
+      <div class="simple-results" id="simpleResults">
+        <div class="simple-status-row">
+          <span class="simple-status-badge" id="simpleStatusBadge">Review</span>
+          <p class="simple-status-text" id="simpleStatusText">Your estimate will appear here.</p>
+        </div>
+        <ul class="simple-checklist" id="simpleChecklist"></ul>
+      </div>
+
+      <!-- Count & price reconciliation — the first thing a reviewer should read -->
+      <section class="project-summary" id="projectSummaryBand" hidden>
+        <div class="ps-header">
+          <div>
+            <h3 class="ps-title" id="psTitle">Project totals</h3>
+            <p class="ps-note" id="psMatchNote"></p>
+          </div>
+          <span class="ps-badge" id="psMatchBadge">—</span>
+        </div>
+        <div class="ps-grid" id="psGrid"></div>
+        <p class="ps-files"><strong>Files read:</strong> <span id="psFiles">—</span></p>
+      </section>
+
+      <section class="calc-audit-box" id="calcAuditBox">
+        <div class="detail-box-header">
+          <h3 class="detail-box-title">How we calculated this</h3>
+          <p class="detail-box-sub" id="calcAuditSummary">Formulas and exact file references for count and price.</p>
+        </div>
+
+        <h4 class="audit-section-title">Document references</h4>
+        <div class="table-scroll">
+          <table class="data-table audit-table stacking-table" id="auditRefsTable">
+            <thead><tr><th>Role</th><th>Location in your files</th><th>Used for</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="audit-two-col">
+          <div>
+            <h4 class="audit-section-title">Count calculation</h4>
+            <div class="table-scroll">
+              <table class="data-table audit-table stacking-table" id="auditCountTable">
+                <thead><tr><th>What</th><th>Value</th><th>Formula</th><th>Reference</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h4 class="audit-section-title">Price calculation</h4>
+            <div class="table-scroll">
+              <table class="data-table audit-table stacking-table" id="auditPriceTable">
+                <thead><tr><th>What</th><th>Value</th><th>Formula</th><th>Reference</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <h4 class="audit-section-title">Line-by-line — count, size, price, source</h4>
+        <div class="table-scroll">
+          <table class="data-table data-table-dense stacking-table" id="auditLinesTable">
+            <thead>
+              <tr>
+                <th>Tag</th>
+                <th>Location</th>
+                <th>Qty</th>
+                <th>How qty is counted</th>
+                <th>Size math</th>
+                <th>Price math</th>
+                <th>Extended</th>
+                <th>Source reference</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Client offer (primary deliverable) -->
+      <section class="client-offer-hero" id="clientOfferHero" hidden>
+        <div class="offer-hero-top">
+          <div>
+            <p class="offer-eyebrow">Prepared take-off</p>
+            <h3 class="offer-headline" id="offerHeroHeadline">—</h3>
+            <p class="offer-project" id="offerHeroProject"></p>
+          </div>
+          <div class="offer-hero-actions">
+            <button type="button" class="btn btn-secondary btn-sm" id="copyOfferBtn">Copy email draft</button>
+          </div>
+        </div>
+        <div class="offer-hero-stats">
+          <div class="offer-stat"><span class="offer-stat-label">Shades in scope</span><span class="offer-stat-value" id="offerHeroShades">—</span></div>
+          <div class="offer-stat"><span class="offer-stat-label">Total price</span><span class="offer-stat-value accent" id="offerHeroPrice">—</span></div>
+          <div class="offer-stat"><span class="offer-stat-label">Per unit (avg)</span><span class="offer-stat-value" id="offerHeroPerUnit">—</span></div>
+          <div class="offer-stat"><span class="offer-stat-label">Status</span><span class="offer-stat-value" id="offerHeroReady">—</span></div>
+        </div>
+        <p class="offer-narrative" id="offerHeroNarrative"></p>
+        <aside class="measure-note" id="offerMeasureNote" hidden>
+          <p class="measure-note-label">Measurement reference</p>
+          <p class="measure-note-text" id="offerMeasureText"></p>
+        </aside>
+        <div class="offer-price-stack" id="offerPriceStack" hidden></div>
+        <p class="offer-docs-read"><strong>We read:</strong> <span id="offerHeroDocs"></span></p>
+        <p class="offer-validity" id="offerHeroValidity"></p>
+      </section>
+
+      <!-- Quantity schedule (contractor deliverable) -->
+      <section class="quantity-schedule-box" id="quantityScheduleBox">
+        <div class="detail-box-header">
+          <h3 class="detail-box-title">Shade list (summary)</h3>
+          <p class="detail-box-sub">Quick view — full math is in “How we calculated this” above</p>
+        </div>
+        <div class="methodology-block methodology-compact" id="quantityMethodology"></div>
+        <aside class="measure-note" id="measureNote" hidden>
+          <p class="measure-note-label">Measurement reference</p>
+          <p class="measure-note-text" id="measureNoteText"></p>
+        </aside>
+        <div class="table-scroll">
+          <table class="data-table stacking-table" id="quantityScheduleTable">
+            <thead id="quantityScheduleHead">
+              <tr>
+                <th>Tag</th>
+                <th>Location</th>
+                <th>Opening (W × H)</th>
+                <th>Qty</th>
+                <th>Line total</th>
+                <th>From sheet</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="schedule-totals" id="quantityScheduleTotals"></p>
+        <details class="schedule-full-details" id="scheduleFullDetails">
+          <summary>Full schedule (count basis &amp; pricing detail)</summary>
+          <div class="table-scroll">
+            <table class="data-table data-table-dense" id="quantityScheduleFullTable">
+              <thead>
+                <tr>
+                  <th>#</th><th>Tag</th><th>Floor</th><th>Room</th><th>Opening W</th><th>Opening H</th><th>Sq ft</th>
+                  <th>System</th><th>Qty</th><th>Count basis</th><th>Source</th><th>Unit $</th><th>Extended</th><th>Calc</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <details class="advanced-panel">
+        <summary>Advanced — how the AI analyzed your files</summary>
+
+      <!-- Estimation detail (how & where we analyzed) -->
+      <div class="estimation-detail-box" id="estimationDetailBox">
+        <div class="detail-box-header">
+          <h3 class="detail-box-title">Estimation detail</h3>
+          <p class="detail-box-sub" id="detailPrimarySource">—</p>
+        </div>
+        <div class="detail-counts">
+          <div class="detail-count">
+            <span class="detail-count-label">Total shades &amp; blinds</span>
+            <span class="detail-count-value" id="detailTotalUnits">—</span>
+          </div>
+          <div class="detail-count">
+            <span class="detail-count-label">Shades</span>
+            <span class="detail-count-value" id="detailShades">—</span>
+          </div>
+          <div class="detail-count">
+            <span class="detail-count-label">Blinds</span>
+            <span class="detail-count-value" id="detailBlinds">—</span>
+          </div>
+          <div class="detail-count">
+            <span class="detail-count-label">Total price</span>
+            <span class="detail-count-value accent" id="detailPrice">—</span>
+          </div>
+        </div>
+        <p class="detail-how" id="detailHowWeCounted"></p>
+        <h4 class="detail-steps-title">Where we looked (step by step)</h4>
+        <div class="detail-steps" id="detailSteps"></div>
+        <h4 class="detail-steps-title">Line items → source in your file</h4>
+        <table class="data-table" id="detailSourcesTable">
+          <thead><tr><th>Tag</th><th>Kind</th><th>Item</th><th>Qty</th><th>W×H</th><th>Sq ft</th><th>Location</th><th>Count basis</th><th>Source</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Summary cards -->
+      <div class="summary-cards advanced-only">
+        <div class="sum-card">
+          <span class="sum-label">Document Type</span>
+          <span class="sum-value" id="sumDocType">—</span>
+        </div>
+        <div class="sum-card">
+          <span class="sum-label">Trade</span>
+          <span class="sum-value" id="sumTrade">—</span>
+        </div>
+        <div class="sum-card highlight">
+          <span class="sum-label">Window Shades</span>
+          <span class="sum-value" id="sumShades">—</span>
+        </div>
+        <div class="sum-card">
+          <span class="sum-label">Take-off Lines</span>
+          <span class="sum-value" id="sumItems">—</span>
+        </div>
+        <div class="sum-card highlight">
+          <span class="sum-label">Total Estimate</span>
+          <span class="sum-value" id="sumTotal">—</span>
+        </div>
+        <div class="sum-card">
+          <span class="sum-label">Confidence</span>
+          <span class="sum-value" id="sumConfidence">—</span>
+        </div>
+        <div class="sum-card">
+          <span class="sum-label">Recommendation</span>
+          <span class="sum-value" id="sumRecommendation">—</span>
+        </div>
+      </div>
+
+      <!-- Tabs (advanced) -->
+      <div class="tabs advanced-only">
+        <button type="button" class="tab active" data-tab="schedule">Quantity schedule</button>
+        <button type="button" class="tab" data-tab="detail">Estimation detail</button>
+        <button type="button" class="tab" data-tab="vision">Vision</button>
+        <button type="button" class="tab" data-tab="context">Context</button>
+        <button type="button" class="tab" data-tab="takeoff">Take-off</button>
+        <button type="button" class="tab" data-tab="estimate">Estimate</button>
+        <button type="button" class="tab" data-tab="validation">Validation</button>
+      </div>
+
+      <div class="tab-panel active" id="tab-schedule">
+        <div class="panel-block">
+          <p class="prose">Full schedule is in the <strong>Quantity schedule</strong> section above. Export CSV for Excel.</p>
+        </div>
+      </div>
+
+      <!-- Tab: Estimation detail (mirrors box; for export view) -->
+      <div class="tab-panel" id="tab-detail">
+        <div class="panel-block">
+          <p class="prose" id="detailTabIntro">See the estimation detail box above for the full analysis trail.</p>
+        </div>
+      </div>
+
+      <!-- Tab: Vision -->
+      <div class="tab-panel" id="tab-vision">
+        <div class="panel-block">
+          <h3 class="block-title">Catalogue &amp; Count</h3>
+          <p id="visionCatalogueSummary" class="prose"></p>
+        </div>
+        <div class="panel-grid">
+          <div class="panel-block">
+            <h3 class="block-title">Vision Estimates</h3>
+            <ul id="visionStats" class="bullet-list"></ul>
+          </div>
+          <div class="panel-block">
+            <h3 class="block-title">Confidence Notes</h3>
+            <ul id="visionNotes" class="bullet-list amber"></ul>
+          </div>
+        </div>
+        <div class="panel-block">
+          <h3 class="block-title">Catalogue Matches</h3>
+          <table class="data-table" id="catalogueTable">
+            <thead><tr><th>SKU</th><th>Product</th><th>Qty</th><th>Reason</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="panel-block">
+          <h3 class="block-title">Window Openings (vision)</h3>
+          <table class="data-table" id="visionWindowsTable">
+            <thead><tr><th>Tag</th><th>Size</th><th>Room</th><th>Type</th><th>Qty</th><th>Shade?</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab: Context -->
+      <div class="tab-panel" id="tab-context">
+        <div class="panel-grid">
+          <div class="panel-block">
+            <h3 class="block-title">Reading Guide</h3>
+            <p id="readingGuide" class="prose"></p>
+          </div>
+          <div class="panel-block">
+            <h3 class="block-title">Key Findings</h3>
+            <ul id="keyFindings" class="bullet-list"></ul>
+          </div>
+        </div>
+        <div class="panel-block">
+          <h3 class="block-title">Document Structure</h3>
+          <table class="data-table" id="structTable">
+            <thead><tr><th>Section</th><th>Description</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="panel-block">
+          <h3 class="block-title">Abbreviations Glossary</h3>
+          <table class="data-table" id="abbrevTable">
+            <thead><tr><th>Term</th><th>Definition</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab: Take-off -->
+      <div class="tab-panel" id="tab-takeoff">
+        <div class="panel-block">
+          <h3 class="block-title">Summary</h3>
+          <p id="takeoffSummary" class="prose"></p>
+        </div>
+        <div class="panel-block">
+          <div class="table-toolbar">
+            <h3 class="block-title">Materials List</h3>
+            <input class="search-input" id="takeoffSearch" placeholder="Search items…" />
+          </div>
+          <table class="data-table" id="takeoffTable">
+            <thead><tr><th>#</th><th>Tag</th><th>W×H</th><th>Sq ft</th><th>Kind</th><th>Item</th><th>Qty</th><th>Location</th><th>Count basis</th><th>Source</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab: Estimate -->
+      <div class="tab-panel" id="tab-estimate">
+        <div class="panel-grid">
+        <div class="panel-block" id="clientOfferBlock" hidden>
+          <h3 class="block-title">Client Offer</h3>
+          <p id="clientOfferHeadline" class="prose"></p>
+          <p id="clientOfferBody" class="prose"></p>
+        </div>
+        <div class="panel-block">
+          <h3 class="block-title">Executive Summary</h3>
+          <p id="execSummary" class="prose"></p>
+        </div>
+          <div class="panel-block">
+            <h3 class="block-title">Assumptions</h3>
+            <ul id="assumptions" class="bullet-list"></ul>
+          </div>
+        </div>
+        <div class="panel-block">
+          <div class="table-toolbar">
+            <h3 class="block-title">Cost Breakdown</h3>
+            <input class="search-input" id="estimateSearch" placeholder="Search items…" />
+          </div>
+          <table class="data-table" id="estimateTable">
+            <thead><tr><th>#</th><th>Tag</th><th>W×H</th><th>Category</th><th>Item</th><th>Qty</th><th>Unit</th><th>Unit Cost</th><th>Labor</th><th>Material</th><th>Total</th><th>Calc</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="cost-footer">
+          <div class="cost-line"><span>Subtotal</span><span id="costSubtotal">—</span></div>
+          <div class="cost-line"><span>Overhead</span><span id="costOverhead">—</span></div>
+          <div class="cost-line"><span>Profit</span><span id="costProfit">—</span></div>
+          <div class="cost-line total"><span>Total Estimate</span><span id="costTotal">—</span></div>
+        </div>
+      </div>
+
+      <!-- Tab: Validation -->
+      <div class="tab-panel" id="tab-validation">
+        <div class="confidence-bar-wrap">
+          <div class="confidence-header">
+            <span class="conf-label">Confidence Score</span>
+            <span class="conf-score" id="confScore">—</span>
+          </div>
+          <div class="confidence-bar"><div class="confidence-fill" id="confFill"></div></div>
+        </div>
+
+        <div class="panel-grid">
+          <div class="panel-block">
+            <h3 class="block-title">Strengths</h3>
+            <ul id="strengths" class="bullet-list green"></ul>
+          </div>
+          <div class="panel-block">
+            <h3 class="block-title">Limitations</h3>
+            <ul id="limitations" class="bullet-list amber"></ul>
+          </div>
+        </div>
+
+        <div class="panel-block">
+          <h3 class="block-title">Validation Issues</h3>
+          <div id="issuesList"></div>
+        </div>
+
+        <div class="panel-block">
+          <h3 class="block-title">Cross-Checks</h3>
+          <table class="data-table" id="xrefTable">
+            <thead><tr><th>Item</th><th>Document Value</th><th>Estimated Value</th><th>Match</th><th>Notes</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="panel-block">
+          <h3 class="block-title">Overall Assessment</h3>
+          <p id="overallAssessment" class="prose"></p>
+        </div>
+      </div>
+
+      </details>
+
+    </section>
+
+    <!-- ── Error Banner ───────────────────────────────────────────────────── -->
+    <div class="error-banner" id="errorBanner" hidden>
+      <strong>Error:</strong> <span id="errorMsg"></span>
+    </div>
+
+  </main>
+
+  <script src="app.js?v=22" defer></script>
+</body>
+</html>

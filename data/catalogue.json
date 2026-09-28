@@ -1,0 +1,90 @@
+[
+  {
+    "sku": "SR-M-STD",
+    "name": "Solar Roller Shade — Manual",
+    "category": "Solar / Screen",
+    "mount": "Inside or Outside",
+    "motorized": false,
+    "widthRangeIn": [24, 96],
+    "heightRangeIn": [24, 120],
+    "listPriceUsd": 285,
+    "notes": "Standard commercial solar fabric, chain operation"
+  },
+  {
+    "sku": "SR-MOT-STD",
+    "name": "Solar Roller Shade — Motorized",
+    "category": "Solar / Screen",
+    "mount": "Inside or Outside",
+    "motorized": true,
+    "widthRangeIn": [24, 120],
+    "heightRangeIn": [24, 120],
+    "listPriceUsd": 520,
+    "notes": "Hard-wired or battery motor per spec"
+  },
+  {
+    "sku": "BB-M-STD",
+    "name": "Blackout Roller Shade — Manual",
+    "category": "Blackout",
+    "mount": "Inside or Outside",
+    "motorized": false,
+    "widthRangeIn": [24, 84],
+    "heightRangeIn": [24, 96],
+    "listPriceUsd": 340,
+    "notes": "Room-darkening fabric"
+  },
+  {
+    "sku": "BB-MOT-STD",
+    "name": "Blackout Roller Shade — Motorized",
+    "category": "Blackout",
+    "mount": "Inside or Outside",
+    "motorized": true,
+    "widthRangeIn": [24, 96],
+    "heightRangeIn": [24, 108],
+    "listPriceUsd": 595,
+    "notes": "Blackout + motor package"
+  },
+  {
+    "sku": "CELL-M-STD",
+    "name": "Cellular / Honeycomb — Manual",
+    "category": "Cellular",
+    "mount": "Inside Mount typical",
+    "motorized": false,
+    "widthRangeIn": [18, 72],
+    "heightRangeIn": [24, 84],
+    "listPriceUsd": 310,
+    "notes": "Energy-efficient honeycomb"
+  },
+  {
+    "sku": "CELL-MOT-STD",
+    "name": "Cellular / Honeycomb — Motorized",
+    "category": "Cellular",
+    "mount": "Inside Mount typical",
+    "motorized": true,
+    "widthRangeIn": [18, 72],
+    "heightRangeIn": [24, 84],
+    "listPriceUsd": 565,
+    "notes": "Honeycomb + motor package"
+  },
+  {
+    "sku": "DUAL-M",
+    "name": "Dual Shade (Day/Night) — Manual",
+    "category": "Dual",
+    "mount": "Inside Mount",
+    "motorized": false,
+    "widthRangeIn": [30, 84],
+    "heightRangeIn": [36, 96],
+    "listPriceUsd": 625,
+    "notes": "Two bands in one opening: solar 285 + blackout 340"
+  },
+  {
+    "sku": "DUAL-MOT",
+    "name": "Dual Shade (Day/Night) — Motorized",
+    "category": "Dual",
+    "mount": "Inside Mount",
+    "motorized": true,
+    "widthRangeIn": [30, 84],
+    "heightRangeIn": [36, 96],
+    "listPriceUsd": 780,
+    "notes": "Solar + blackout combo system"
+  }
+]
