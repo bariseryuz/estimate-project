@@ -52,6 +52,16 @@ async def run_takeoff_engine(
 
     wb = workbook_analysis or context_parser_output.get("workbook") or {}
 
+    drawing = (vision_result or {}).get("drawingTakeoff")
+    if drawing and drawing.get("takeoffItems"):
+        await progress("Building take-off from the unit matrix and unit plans…")
+        for item in drawing.get("takeoffItems") or []:
+            enrich_takeoff_item(item)
+        if on_document_step:
+            await _emit_takeoff_lines(on_document_step, drawing, label="Drawing line")
+        await progress(drawing.get("summary") or "Take-off complete (drawing set).")
+        return drawing
+
     # Deterministic Excel path first: no retrieval, no LLM count, no reconciliation.
     if workbook_has_structured_takeoff(wb):
         await progress("Building take-off from parsed Excel (Matrix + Blind QTY)…")

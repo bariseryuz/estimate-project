@@ -159,8 +159,22 @@ def _sniff_extension(contents: bytes) -> Optional[str]:
 
 
 def _ingest_pdf(contents: bytes) -> IngestResult:
-    reader = pypdf.PdfReader(io.BytesIO(contents))
-    page_texts = [page.extract_text() or "" for page in reader.pages]
+    # PyMuPDF reads these drawing sheets in seconds. pypdf on the same set can
+    # sit for minutes and drop the browser connection before any response.
+    try:
+        import fitz
+
+        doc = fitz.open(stream=contents, filetype="pdf")
+        page_texts = []
+        for page in doc:
+            try:
+                page_texts.append(page.get_text("text") or "")
+            except Exception:
+                page_texts.append("")
+        doc.close()
+    except Exception:
+        reader = pypdf.PdfReader(io.BytesIO(contents))
+        page_texts = [page.extract_text() or "" for page in reader.pages]
     document_text = "\n\n".join(page_texts)
     pages_with_text = [i + 1 for i, t in enumerate(page_texts) if (t or "").strip()]
     return IngestResult(
@@ -171,7 +185,7 @@ def _ingest_pdf(contents: bytes) -> IngestResult:
         image_media_type=None,
         source_format=".pdf",
         ingest_meta={
-            "readMethod": "PDF text (pypdf) + AI vision on rendered pages when applicable",
+            "readMethod": "PDF text (PyMuPDF)",
             "pageCount": len(page_texts),
             "pagesWithText": pages_with_text,
             "characterCount": len(document_text),

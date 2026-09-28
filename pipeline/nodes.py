@@ -16,6 +16,7 @@ from domain.workbook_takeoff import workbook_count_reconciliation
 from pipeline.document_steps import emit_doc_step
 from pipeline.validation_adjust import adjust_validation_for_workbook
 from agents.context_parser import run_context_parser
+from agents.drawing_reader import read_drawing_set
 from agents.vision_analyst import run_vision_analyst
 from agents.estimation_agent import run_estimation_agent
 from agents.takeoff_engine import run_takeoff_engine
@@ -138,6 +139,34 @@ async def vision_analyst_node(state: PipelineState) -> dict:
         data={"playbook": get_agent_playbook("visionAnalyst")},
     )
     await _emit(sid, "visionAnalyst", "running", "Reading document with AI vision…")
+
+    drawing_sheets = state.get("drawing_sheets") or []
+    if drawing_sheets:
+        try:
+            result = await read_drawing_set(drawing_sheets, on_progress=on_progress)
+            await _emit(
+                sid,
+                "visionAnalyst",
+                "complete",
+                result.get("catalogueSummary") or "Drawing set read.",
+                data={
+                    "pagesAnalyzed": result.get("pagesAnalyzed"),
+                    "estimatedTotalShades": result.get("estimatedTotalShades"),
+                    "estimatedTotalWindows": result.get("estimatedTotalWindows"),
+                    "shadesRequired": result.get("shadesRequired"),
+                    "catalogueSummary": result.get("catalogueSummary"),
+                    "confidenceNotes": (result.get("confidenceNotes") or [])[:5],
+                    "openingCount": len(result.get("windowOpenings") or []),
+                },
+            )
+            return {
+                "vision_result": result,
+                "document_text": state["document_text"],
+                "page_images": [],
+                "drawing_sheets": [],
+            }
+        except Exception as exc:
+            return await _fail(sid, "visionAnalyst", "Vision Analyst", str(exc))
 
     try:
         result = await run_vision_analyst(

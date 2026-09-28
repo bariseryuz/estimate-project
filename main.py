@@ -113,10 +113,16 @@ def _merge_uploads(uploads: list[tuple[str, bytes, str]]) -> dict:
     total_size = 0
     ingest_meta_list: list[dict] = []
 
+    texts: dict[str, str] = {}
     for filename, contents, ext in uploads:
         file_names.append(filename)
         total_size += len(contents)
-        ingested = ingest_upload(filename, contents)
+        try:
+            ingested = ingest_upload(filename, contents)
+        except Exception as exc:
+            ingest_meta_list.append({"file": filename, "readMethod": "unreadable", "error": str(exc)})
+            continue
+        texts[filename] = ingested.document_text or ""
         ingest_meta_list.append({"file": filename, **ingested.ingest_meta})
 
         header = f"\n\n======== FILE: {filename} ({ingested.source_format}) ========\n\n"
@@ -134,6 +140,16 @@ def _merge_uploads(uploads: list[tuple[str, bytes, str]]) -> dict:
 
     document_text = "\n".join(parts_text).strip()
     workbook_analysis = analyze_multiple(uploads)
+    from domain.drawing_set import prepare_drawing_set
+
+    drawing = None
+    has_workbook = bool(
+        workbook_analysis.get("authoritativeTotalShades") is not None
+        or workbook_analysis.get("blindQtyLines")
+        or workbook_analysis.get("windowMatrixMarkings")
+    )
+    if not has_workbook:
+        drawing = prepare_drawing_set(uploads, texts)
 
     display_name = (
         file_names[0]
@@ -141,10 +157,16 @@ def _merge_uploads(uploads: list[tuple[str, bytes, str]]) -> dict:
         else f"{len(file_names)} files ({', '.join(file_names[:3])}{'…' if len(file_names) > 3 else ''})"
     )
 
+    if drawing:
+        document_text = drawing["brief"]
+        page_texts = []
+        pdf_bytes = None
+
     return {
         "document_text": document_text,
         "page_texts": page_texts or None,
         "pdf_bytes": pdf_bytes,
+        "drawing_sheets": drawing["sheets"] if drawing else None,
         "image_base64": image_base64,
         "image_media_type": image_media_type,
         "workbook_analysis": workbook_analysis,
@@ -251,7 +273,7 @@ async def estimate(
         raise HTTPException(status_code=400, detail=detail)
 
     try:
-        merged = _merge_uploads(uploads)
+        merged = await asyncio.to_thread(_merge_uploads, uploads)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -309,6 +331,7 @@ async def estimate(
         "page_images": None,
         "source_meta": merged["source_meta"],
         "workbook_analysis": merged["workbook_analysis"],
+        "drawing_sheets": merged.get("drawing_sheets"),
         "session_id": session_id,
         "workbook_fast_path": fast_path,
         "vision_result": None,

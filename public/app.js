@@ -632,7 +632,13 @@ async function startPipeline() {
   } catch (err) {
     sseConn.close();
     finishPipelineVisual(false);
-    showError(err.message || String(err));
+    const raw = err.message || String(err);
+    const dropped = /failed to fetch|networkerror|empty response/i.test(raw);
+    showError(
+      dropped
+        ? 'The connection dropped before a count came back. Run Estimate again. A drawing set stays open while the unit matrix and the unit plans are read.'
+        : raw
+    );
   } finally {
     stopPipelineTimer();
     runBtn.disabled = selectedFiles.length === 0;

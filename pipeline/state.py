@@ -22,6 +22,8 @@ class PipelineState(TypedDict):
     page_images: Optional[list]
     source_meta: Optional[dict]
     workbook_analysis: Optional[dict]
+    # Sheet images for an architectural set. Cleared after the vision node reads them.
+    drawing_sheets: Optional[list]
     session_id: str
 
     # True when the upload is Excel-only and the WINDOW MATRIX states the total,
