@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 _UNIT_LINE = re.compile(
@@ -36,6 +37,15 @@ _FLOOR_SKIP = (
     "zoning",
     "cover",
 )
+
+
+def _measure_plan(row: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    from domain.plan_openings import count_plan_openings
+
+    try:
+        return row, count_plan_openings(row["data"])
+    except Exception:
+        return row, None
 
 
 def prepare_drawing_set(
@@ -64,12 +74,18 @@ def prepare_drawing_set(
 
     units = _units_from_floor_plans(classified)
     project = _project_name(classified)
-    from domain.plan_openings import count_plan_openings
 
     sheets = []
+    plan_rows = [row for row in classified if row["role"] == "unit_plan"]
+    measured_plans: dict[str, Optional[dict[str, Any]]] = {}
+    if plan_rows:
+        workers = min(8, len(plan_rows))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for row, openings in pool.map(_measure_plan, plan_rows):
+                measured_plans[row["file"]] = openings
     for row in classified:
         if row["role"] == "unit_plan":
-            openings = count_plan_openings(row["data"])
+            openings = measured_plans.get(row["file"])
             if openings:
                 sheets.append(
                     {
@@ -149,6 +165,53 @@ def classify_sheet(name: str, text: str) -> str:
     if "floor" in file_name and not any(skip in file_name for skip in _FLOOR_SKIP):
         return "floor_plan"
     return "other"
+
+
+_SKIP_TEXT = (
+    "elev",
+    "section",
+    "detail",
+    "note",
+    "rcp",
+    "roof",
+    "site",
+    "stair",
+    "door",
+    "cladding",
+    "zoning",
+    "cover",
+    "legend",
+    "schedule",
+    "finish",
+    "furniture",
+)
+
+
+def filenames_needing_text(names: list[str]) -> list[str]:
+    """
+    Sheets whose words can change the count.
+
+    A named unit plan is measured from its drawn tags, and a named unit matrix
+    is read from the image. Floor-plan labels, and any sheet that might still
+    be a matrix or a floor plan, are the ones that need a text read.
+    """
+    roles = [(name, classify_sheet(name, "")) for name in names]
+    role_set = {role for _, role in roles}
+    named_pair = "unit_matrix" in role_set and "unit_plan" in role_set
+    needed: list[str] = []
+    for name, role in roles:
+        if role == "floor_plan":
+            needed.append(name)
+            continue
+        if role in ("unit_plan", "unit_matrix", "window_schedule"):
+            continue
+        lower = name.lower()
+        if "plan" in lower and not any(skip in lower for skip in _SKIP_TEXT):
+            needed.append(name)
+            continue
+        if not named_pair:
+            needed.append(name)
+    return needed
 
 
 def norm_type(value: str) -> str:

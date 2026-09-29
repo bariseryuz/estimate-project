@@ -54,6 +54,16 @@ async def emit_ingest_walk(session_id: str, merged: dict[str, Any]) -> None:
     """Walk uploaded files and visible text sections before agents run."""
     meta = merged.get("source_meta") or {}
     names = meta.get("fileNames") or []
+    if merged.get("drawing_sheets") and len(names) > 12:
+        await emit_doc_step(
+            session_id,
+            "document",
+            f"Opened {len(names)} drawing sheets. Reading the unit matrix, unit plans, and floor plans.",
+            heading="Drawing set",
+            excerpt=f"{len(names)} sheets are in the workspace. Notes, elevations, and details are not read for the count.",
+            step_kind="file",
+        )
+        return
     for name in names:
         await emit_doc_step(
             session_id,

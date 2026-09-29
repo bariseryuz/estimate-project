@@ -72,6 +72,24 @@ def supported_extensions_hint() -> str:
     return ", ".join(exts)
 
 
+def extract_pdf_text(contents: bytes) -> str:
+    """Text layer only. Used when a drawing set does not need every sheet opened."""
+    try:
+        import fitz
+
+        doc = fitz.open(stream=contents, filetype="pdf")
+        parts = []
+        for page in doc:
+            try:
+                parts.append(page.get_text("text") or "")
+            except Exception:
+                parts.append("")
+        doc.close()
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
+
+
 def ingest_upload(filename: str, contents: bytes) -> IngestResult:
     ext = Path(filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:

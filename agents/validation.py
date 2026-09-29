@@ -32,6 +32,10 @@ async def run_validation(
         if on_progress:
             await on_progress(msg)
 
+    if takeoff_output.get("dataSource") == "drawing_set":
+        await progress("Checking the unit-matrix total against the rows that were read.")
+        return _drawing_set_validation(takeoff_output, estimation_output)
+
     embedded_chunks = context_parser_output.get("embedded_chunks") or []
     workbook = context_parser_output.get("workbook") or {}
 
@@ -136,3 +140,53 @@ Return ONLY valid JSON matching this schema:
 
     await progress("Validation complete.")
     return result
+
+
+def _drawing_set_validation(takeoff: dict, estimation: dict) -> dict:
+    """The count is already arithmetic. Do not send it through another model call."""
+    printed = takeoff.get("matrixUnitsPrinted")
+    read = takeoff.get("matrixUnitsRead")
+    match = printed is not None and read == printed
+    priced = estimation.get("totalEstimate") is not None
+    summary = takeoff.get("summary") or "Shade count taken from the unit matrix and unit plans."
+    issues = []
+    if not match:
+        issues.append(
+            {
+                "severity": "Warning",
+                "category": "Count",
+                "issue": f"Matrix rows read {read}. The sheet prints TOTAL UNITS {printed}.",
+                "recommendation": "Check the unit-matrix image for the apartments that did not match.",
+            }
+        )
+    if not priced:
+        issues.append(
+            {
+                "severity": "Info",
+                "category": "Price",
+                "issue": "These drawings do not print a sell price.",
+                "recommendation": "Add the price workbook when a bid is required.",
+            }
+        )
+    return {
+        "confidenceScore": 90 if match else 55,
+        "confidenceLevel": "High" if match else "Medium",
+        "readyToSendOffer": bool(match and priced),
+        "validationIssues": issues,
+        "crossChecks": [
+            {
+                "item": "Unit matrix total",
+                "documentValue": "" if printed is None else str(printed),
+                "estimatedValue": "" if read is None else str(read),
+                "match": bool(match),
+                "notes": summary,
+            }
+        ],
+        "strengths": [summary],
+        "limitations": ["Lobby and amenity shades are not on the unit plans."]
+        + ([] if priced else ["No sell price is printed on these sheets."]),
+        "overallAssessment": summary,
+        "recommendation": "Approved" if match else "Needs Review",
+        "validationSummary": summary,
+        "userFriendlySummary": summary,
+    }

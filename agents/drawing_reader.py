@@ -194,7 +194,7 @@ def _chosen_plan(type_code: str, plan_rows: list[dict[str, Any]]) -> Optional[di
 async def _read_tiles(sheets: list[dict[str, Any]], progress: ProgressCallback) -> list[dict[str, Any]]:
     if not sheets:
         return []
-    semaphore = asyncio.Semaphore(3)
+    semaphore = asyncio.Semaphore(9)
     payloads: list[dict[str, Any]] = []
 
     async def one(sheet: dict[str, Any]) -> dict[str, Any]:

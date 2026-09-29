@@ -242,6 +242,33 @@ async def context_parser_node(state: PipelineState) -> dict:
         get_agent_playbook("contextParser").get("mission", ""),
         data={"playbook": get_agent_playbook("contextParser")},
     )
+    drawing = (state.get("vision_result") or {}).get("drawingTakeoff") or {}
+    if drawing.get("takeoffItems"):
+        await _emit(
+            sid,
+            "contextParser",
+            "complete",
+            "The count is already on the drawings, so the document index is skipped.",
+            data={
+                "documentType": "Architectural drawing set",
+                "projectName": None,
+                "keyFindings": [drawing.get("summary") or ""][:1],
+            },
+        )
+        return {
+            "context_result": {
+                "documentType": "Architectural drawing set",
+                "trade": "Window Treatments / Shades",
+                "projectName": None,
+                "windowScheduleLocation": "Unit matrix and unit plans",
+                "readingGuide": (state.get("document_text") or "")[:600],
+                "abbreviations": [],
+                "embedded_chunks": [],
+                "workbook": state.get("workbook_analysis") or {},
+                "keyFindings": [drawing.get("summary") or ""],
+            }
+        }
+
     await _emit(sid, "contextParser", "running", "Analyzing document context…")
 
     try:

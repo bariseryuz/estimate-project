@@ -5,6 +5,7 @@ main.py — FastAPI server + LangGraph orchestrator.
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
@@ -29,7 +30,7 @@ from pipeline.project_summary import build_project_summary
 from pipeline.quantity_schedule import build_quantity_schedule
 from pipeline.graph import pipeline_graph
 from pipeline.state import PipelineState
-from rag.file_ingest import SUPPORTED_EXTENSIONS, ingest_upload, supported_extensions_hint
+from rag.file_ingest import SUPPORTED_EXTENSIONS, extract_pdf_text, ingest_upload, supported_extensions_hint
 from domain.pipeline_playbook import get_agent_playbook
 from domain.workbook_takeoff import should_use_workbook_fast_path
 from pipeline.document_steps import emit_ingest_walk
@@ -102,8 +103,78 @@ async def pipeline_guide():
     return {"agents": AGENT_PLAYBOOK}
 
 
+def _is_pdf(name: str, ext: str) -> bool:
+    return (ext or "").lower() == ".pdf" or name.lower().endswith(".pdf")
+
+
+def _workbook_has_counts(workbook_analysis: Optional[dict]) -> bool:
+    workbook = workbook_analysis or {}
+    return bool(
+        workbook.get("authoritativeTotalShades") is not None
+        or workbook.get("blindQtyLines")
+        or workbook.get("windowMatrixMarkings")
+    )
+
+
+def _texts_for_drawing(uploads: list[tuple[str, bytes, str]]) -> dict[str, str]:
+    """Read text only on the sheets that can change a drawing-set count."""
+    from domain.drawing_set import filenames_needing_text
+
+    pdfs = [(name, data) for name, data, ext in uploads if _is_pdf(name, ext)]
+    needed = set(filenames_needing_text([name for name, _ in pdfs]))
+    if not needed:
+        return {}
+    by_name = {name: data for name, data in pdfs if name in needed}
+
+    def read_one(name: str) -> tuple[str, str]:
+        return name, extract_pdf_text(by_name[name])
+
+    texts: dict[str, str] = {}
+    workers = min(8, len(by_name))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for name, text in pool.map(read_one, by_name):
+            texts[name] = text
+    return texts
+
+
 def _merge_uploads(uploads: list[tuple[str, bytes, str]]) -> dict:
     """Merge multiple ingested files into one pipeline payload."""
+    workbook_analysis = analyze_multiple(uploads) or {}
+    drawing = None
+    if not _workbook_has_counts(workbook_analysis):
+        from domain.drawing_set import prepare_drawing_set
+
+        pdf_count = sum(1 for name, _data, ext in uploads if _is_pdf(name, ext))
+        if pdf_count >= 3:
+            drawing = prepare_drawing_set(uploads, _texts_for_drawing(uploads))
+
+    if drawing:
+        file_names = [name for name, _data, _ext in uploads]
+        total_size = sum(len(data) for _name, data, _ext in uploads)
+        return {
+            "document_text": drawing["brief"],
+            "page_texts": None,
+            "pdf_bytes": None,
+            "drawing_sheets": drawing["sheets"],
+            "image_base64": None,
+            "image_media_type": None,
+            "workbook_analysis": workbook_analysis,
+            "source_meta": {
+                "fileName": (
+                    file_names[0]
+                    if len(file_names) == 1
+                    else f"{len(file_names)} files ({', '.join(file_names[:3])}{'…' if len(file_names) > 3 else ''})"
+                ),
+                "fileNames": file_names,
+                "fileSizeBytes": total_size,
+                "sourceFormat": "multi",
+                "ingest": {
+                    "readMethod": "Drawing set",
+                    "files": [{"file": name, "readMethod": "Drawing set"} for name in file_names],
+                },
+            },
+        }
+
     parts_text: list[str] = []
     page_texts: list[str] = []
     pdf_bytes: Optional[bytes] = None
@@ -139,16 +210,9 @@ def _merge_uploads(uploads: list[tuple[str, bytes, str]]) -> dict:
             image_media_type = ingested.image_media_type
 
     document_text = "\n".join(parts_text).strip()
-    workbook_analysis = analyze_multiple(uploads)
-    from domain.drawing_set import prepare_drawing_set
+    if not _workbook_has_counts(workbook_analysis):
+        from domain.drawing_set import prepare_drawing_set
 
-    drawing = None
-    has_workbook = bool(
-        workbook_analysis.get("authoritativeTotalShades") is not None
-        or workbook_analysis.get("blindQtyLines")
-        or workbook_analysis.get("windowMatrixMarkings")
-    )
-    if not has_workbook:
         drawing = prepare_drawing_set(uploads, texts)
 
     display_name = (

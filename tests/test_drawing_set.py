@@ -3,11 +3,13 @@
 import unittest
 
 from agents.estimation_agent import _unpriced_drawing_estimate
+from agents.validation import _drawing_set_validation
 
 from domain.drawing_set import (
     apply_printed_unit_types,
     classify_sheet,
     combine_counts,
+    filenames_needing_text,
     merge_unit_rows,
     norm_type,
     type_from_filename,
@@ -131,6 +133,40 @@ class TestDrawingSet(unittest.TestCase):
         self.assertEqual(estimate["priceSource"], "not_on_drawings")
         self.assertEqual(estimate["estimates"][0]["quantity"], 10)
         self.assertIsNone(estimate["estimates"][0]["totalCost"])
+
+    def test_named_plans_skip_text_on_notes_and_elevations(self):
+        names = [
+            "A-0.04.1-UPDATED-UNIT-MATRIX-Rev.Permit.pdf",
+            "A-4.00-UNIT-A-1-a-Rev.Permit.pdf",
+            "A-1.01-GROUND-FLOOR-AND-SECOND-FLOOR.pdf",
+            "A-2.01-BUILDING-ELEVATION.pdf",
+            "A-0.02-NOTES-AND-ABBREVIATIONS.pdf",
+        ]
+        self.assertEqual(
+            filenames_needing_text(names),
+            ["A-1.01-GROUND-FLOOR-AND-SECOND-FLOOR.pdf"],
+        )
+
+    def test_a_missing_matrix_name_still_reads_the_other_sheets(self):
+        names = [
+            "A-4.00-UNIT-A-1-a-Rev.Permit.pdf",
+            "A-2.01-BUILDING-ELEVATION.pdf",
+        ]
+        self.assertIn("A-2.01-BUILDING-ELEVATION.pdf", filenames_needing_text(names))
+
+    def test_drawing_validation_does_not_invent_a_price_check(self):
+        result = _drawing_set_validation(
+            {
+                "dataSource": "drawing_set",
+                "matrixUnitsPrinted": 144,
+                "matrixUnitsRead": 144,
+                "summary": "470 window shades.",
+            },
+            {"totalEstimate": None},
+        )
+        self.assertEqual(result["recommendation"], "Approved")
+        self.assertFalse(result["readyToSendOffer"])
+        self.assertEqual(result["crossChecks"][0]["match"], True)
 
 
 if __name__ == "__main__":
