@@ -66,7 +66,13 @@ async def read_drawing_set(
     plan_rows = [_plan_from_openings(sheet) for sheet in measured]
     if unread:
         plan_rows.extend(await _read_plans(unread, progress))
-    combined = combine_counts(merged["types"], plan_rows)
+    sizes: dict[str, Any] = {}
+    size_file = ""
+    for sheet in sheets:
+        if sheet.get("role") == "window_sizes" and isinstance(sheet.get("sizes"), dict):
+            sizes.update(sheet["sizes"])
+            size_file = str(sheet.get("file") or size_file)
+    combined = combine_counts(merged["types"], plan_rows, sizes)
 
     window_total = 0
     blind_total = 0
@@ -103,6 +109,13 @@ async def read_drawing_set(
         )
     if combined["unmatched"]:
         notes.append("No matching unit plan for: " + ", ".join(combined["unmatched"]) + ".")
+    sized = sum(1 for line in combined["lines"] if line.get("width") and line.get("height"))
+    if sizes:
+        notes.append(
+            f"Width and height come from the window schedule{(' ' + size_file) if size_file else ''}. "
+            f"{sized} of {len(combined['lines'])} shade lines have both cells printed. "
+            "A mark with a blank size cell is left blank. Elevation dimensions are not used."
+        )
     notes.append(
         "Each shade is a window tag drawn on the unit floor plan, in living, dining, bedroom, den, or kitchen. "
         "Square door tags, sliding doors, storefront, and exterior sunshades are not included. "
@@ -150,7 +163,14 @@ async def read_drawing_set(
         "estimatedTotalBlinds": blind_total,
         "shadesRequired": True if combined["total"] else None,
         "windowOpenings": [
-            {"tag": line["windowTag"], "quantity": line["quantity"], "location": line["sourceLocation"]}
+            {
+                "tag": line["windowTag"],
+                "quantity": line["quantity"],
+                "location": line["sourceLocation"],
+                "width": line.get("width") or "",
+                "height": line.get("height") or "",
+                "unitType": line.get("unitType") or "",
+            }
             for line in lines
         ],
         "catalogueSummary": summary,
@@ -172,6 +192,7 @@ def _plan_from_openings(sheet: dict[str, Any]) -> dict[str, Any]:
         "shades": shades,
         "shadeOpenings": shades,
         "blinds": int(openings.get("blinds") or 0),
+        "tags": openings.get("tags") or [],
         "notes": openings.get("notes") or "",
     }
 
@@ -207,7 +228,7 @@ async def _read_tiles(sheets: list[dict[str, Any]], progress: ProgressCallback) 
                         _image_block(sheet),
                     ],
                     temperature=0.0,
-                    max_tokens=8000,
+                    max_tokens=4096,
                 )
             except Exception:
                 return {}

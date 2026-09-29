@@ -360,6 +360,11 @@ def _methodology(
         )
 
     measurement = (workbook.get("measurementReference") or {}).get("note")
+    if not measurement and takeoff.get("dataSource") == "drawing_set":
+        measurement = (
+            "Dimensions: WIDTH and HEIGHT printed in the window schedule for that window mark. "
+            "Square feet = (width in × height in) ÷ 144. A blank schedule cell is not filled in from an elevation."
+        )
     if measurement:
         rules.append(measurement)
     else:

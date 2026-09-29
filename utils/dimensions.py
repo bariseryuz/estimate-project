@@ -46,10 +46,10 @@ def parse_length_inches(value: Any) -> Optional[float]:
             return n * 12
         return n
 
-    if "×" in s or "x" in s.lower():
-        parts = re.split(r"[×x]", s, maxsplit=1)
-        if parts:
-            return parse_length_inches(parts[0].strip())
+    if re.search(r"[×x]", s, flags=re.IGNORECASE):
+        head = re.split(r"[×x]", s, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if head and head != s:
+            return parse_length_inches(head)
 
     return None
 

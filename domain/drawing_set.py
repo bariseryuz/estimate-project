@@ -106,6 +106,21 @@ def prepare_drawing_set(
                     "imageBase64": base64.b64encode(jpeg).decode("ascii"),
                 }
             )
+    from domain.window_sizes import read_window_sizes
+
+    for row in classified:
+        if row["role"] != "window_schedule":
+            continue
+        sizes = read_window_sizes(row["data"])
+        if sizes:
+            sheets.append(
+                {
+                    "file": row["file"],
+                    "role": "window_sizes",
+                    "sizes": sizes,
+                }
+            )
+
     printed_types = unit_types_from_floor_plans(classified)
     if printed_types:
         sheets.append(
@@ -221,6 +236,7 @@ def norm_type(value: str) -> str:
 def combine_counts(
     matrix_types: list[dict[str, Any]],
     plan_rows: list[dict[str, Any]],
+    sizes: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
     Multiply each matrix unit count by the shade openings on that unit's plan.
@@ -259,9 +275,14 @@ def combine_counts(
             unmatched.append(code)
             continue
         openings = _opening_count(plans)
+        plan = _plan_with_opening_count(plans, openings)
         shades = count * openings
         total += shades
-        source = plans[0].get("file") or "unit plan"
+        source = (plan or plans[0]).get("file") or "unit plan"
+        tag_lines = _lines_for_tags(code, count, plan or plans[0], source, sizes or {})
+        if tag_lines:
+            lines.extend(tag_lines)
+            continue
         lines.append(
             {
                 "windowTag": code,
@@ -283,6 +304,91 @@ def combine_counts(
             }
         )
     return {"lines": lines, "total": total, "unmatched": unmatched}
+
+
+def _plan_with_opening_count(plans: list[dict[str, Any]], openings: int) -> Optional[dict[str, Any]]:
+    for row in plans:
+        raw = row.get("shadeOpenings")
+        if raw is None:
+            raw = row.get("shades")
+        try:
+            if int(raw or 0) == openings:
+                return row
+        except (TypeError, ValueError):
+            continue
+    return plans[0] if plans else None
+
+
+def _lines_for_tags(
+    unit_code: str,
+    unit_count: int,
+    plan: dict[str, Any],
+    source: str,
+    sizes: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One line per window mark when the plan's shade tags add up to its shade count."""
+    tags = [
+        tag
+        for tag in (plan.get("tags") or [])
+        if isinstance(tag, dict) and not str(tag.get("room") or "").upper().startswith("BATH")
+    ]
+    openings = plan.get("shadeOpenings")
+    if openings is None:
+        openings = plan.get("shades")
+    try:
+        opening_count = int(openings or 0)
+    except (TypeError, ValueError):
+        return []
+    if not tags or len(tags) != opening_count:
+        return []
+    grouped: dict[str, dict[str, Any]] = {}
+    for tag in tags:
+        mark = str(tag.get("tag") or "").strip().upper()
+        if not mark:
+            return []
+        bucket = grouped.setdefault(mark, {"n": 0, "rooms": []})
+        bucket["n"] += 1
+        room = str(tag.get("room") or "").strip()
+        if room and room not in bucket["rooms"]:
+            bucket["rooms"].append(room)
+    lines = []
+    for mark, bucket in grouped.items():
+        size = sizes.get(mark) or {}
+        quantity = unit_count * int(bucket["n"])
+        rooms = ", ".join(bucket["rooms"])
+        width = size.get("width") or ""
+        height = size.get("height") or ""
+        size_note = (
+            f"{width} × {height} on the window schedule"
+            if width and height
+            else "width and height are not printed in that mark's schedule cells"
+        )
+        lines.append(
+            {
+                "windowTag": mark,
+                "unitType": unit_code,
+                "quantity": quantity,
+                "unit": "EA",
+                "floor": "",
+                "room": rooms or unit_code,
+                "areaSection": "Residential units",
+                "category": "Window shade",
+                "item": f"{mark} shades for unit {unit_code}",
+                "productKind": "Shade",
+                "width": width,
+                "height": height,
+                "widthInches": size.get("widthInches"),
+                "heightInches": size.get("heightInches"),
+                "sourceLocation": f"{source} mark {mark} × {unit_count} units of {unit_code}",
+                "calculationBasis": (
+                    f"{unit_count} units of {unit_code} × {bucket['n']} {mark} opening"
+                    f"{'s' if bucket['n'] != 1 else ''} on {source}. {size_note}."
+                ),
+                "dataSource": "drawing_set",
+                "notes": plan.get("notes") or "",
+            }
+        )
+    return lines
 
 
 _UNIT_NUMBER = re.compile(r"^(?:LW-)?\d{2,4}$", re.IGNORECASE)
@@ -473,16 +579,34 @@ def _units_from_floor_plans(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [found[key] for key in sorted(found, key=lambda item: int(item))]
 
 
+_PROJECT_LABEL = re.compile(r"PROJECT(?:\s+NAME)?\s*[:\-]\s*(.+)", re.IGNORECASE)
+_STREET = re.compile(
+    r"\d{2,5}(?:\s*[\-–]\s*\d{2,5})?\s+[A-Z0-9][A-Z0-9.'\- ]{1,40}\s+"
+    r"(?:AVENUE|AVE|STREET|ST|ROAD|RD|BOULEVARD|BLVD|DRIVE|DR|LANE|LN|WAY|COURT|CT)\b",
+    re.IGNORECASE,
+)
+
+
 def _project_name(rows: list[dict[str, Any]]) -> str:
+    """The name the title block repeats. A street or a PROJECT label, not one job's name."""
+    labeled: dict[str, int] = {}
+    streets: dict[str, int] = {}
     for row in rows:
         text = row.get("text") or ""
-        match = re.search(r"(\d{2,4}[\-–]\d{2,4}\s+[A-Z][A-Z ]{3,40})", text)
-        if match and "MADEIRA" in match.group(1).upper():
-            return " ".join(match.group(1).split())
-        if "PROJECT" in text.upper() and "MADEIRA" in text.upper():
-            for line in text.splitlines():
-                if "MADEIRA" in line.upper() and len(line.strip()) < 80:
-                    return " ".join(line.split())
+        for line in text.splitlines():
+            match = _PROJECT_LABEL.search(line.strip())
+            if not match:
+                continue
+            name = " ".join(match.group(1).split())
+            if 3 < len(name) < 80:
+                labeled[name] = labeled.get(name, 0) + 1
+        for match in _STREET.finditer(text):
+            name = " ".join(match.group(0).split())
+            streets[name.upper()] = streets.get(name.upper(), 0) + 1
+    if labeled:
+        return max(labeled, key=lambda name: (labeled[name], len(name)))
+    if streets:
+        return max(streets, key=lambda name: (streets[name], len(name)))
     return ""
 
 

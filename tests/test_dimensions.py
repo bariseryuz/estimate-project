@@ -19,6 +19,10 @@ class TestDimensions(unittest.TestCase):
     def test_plain_number_small_is_feet(self):
         self.assertEqual(parse_length_inches("6"), 72.0)
 
+    def test_a_word_with_an_uppercase_x_is_not_a_size(self):
+        self.assertIsNone(parse_length_inches("EXTRA"))
+        self.assertEqual(parse_length_inches("3'-0\" X 5'-0\""), 36.0)
+
     def test_square_feet(self):
         self.assertEqual(square_feet(48, 72), 24.0)
 

@@ -15,7 +15,7 @@ _ROOM = re.compile(
     r"^(?:LIVING(?:/DINING)?|DINING|BEDROOM|BATH(?:ROOM)?|DEN|KITCHEN|MASTER)$",
     re.IGNORECASE,
 )
-_TAG = re.compile(r"^(?:[A-Z]\d{0,2}|U\d+)$")
+_TAG = re.compile(r"^(?=.*[A-Z])(?:[A-Z]{1,3}\d{0,3}|\d{1,3}[A-Z]{1,2})$")
 _BLIND = re.compile(r"\bblinds?\b", re.IGNORECASE)
 
 
