@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from clients.llm import complete_json
-from domain.drawing_set import combine_counts, merge_unit_rows
+from domain.drawing_set import apply_printed_unit_types, combine_counts, merge_unit_rows
 
 ProgressCallback = Callable[[str], Awaitable[None]]
 
@@ -58,6 +58,11 @@ async def read_drawing_set(
 
     matrix_rows = await _read_tiles(matrix, progress)
     merged = merge_unit_rows(matrix_rows)
+    printed_types = {}
+    for sheet in sheets:
+        if sheet.get("role") == "floor_plan_types":
+            printed_types = sheet.get("types") or {}
+    merged = apply_printed_unit_types(merged, printed_types)
     plan_rows = [_plan_from_openings(sheet) for sheet in measured]
     if unread:
         plan_rows.extend(await _read_plans(unread, progress))
@@ -85,6 +90,17 @@ async def read_drawing_set(
         )
     elif printed is not None:
         notes.append(f"Unit rows add up to the printed TOTAL UNITS of {printed}.")
+    from_plans = merged.get("typesFromFloorPlans") or 0
+    corrected = merged.get("typesCorrected") or 0
+    if from_plans:
+        notes.append(
+            f"{from_plans} apartment types were taken from the text printed on the floor plans"
+            + (
+                f", {corrected} of which the matrix image had read differently."
+                if corrected
+                else "."
+            )
+        )
     if combined["unmatched"]:
         notes.append("No matching unit plan for: " + ", ".join(combined["unmatched"]) + ".")
     notes.append(

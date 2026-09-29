@@ -38,6 +38,10 @@ async def run_estimation_agent(
     ctx = context_parser_output or {}
     wb = workbook_analysis or ctx.get("workbook") or {}
 
+    if takeoff_output.get("dataSource") == "drawing_set" and not (wb.get("referencePricing") or {}):
+        await progress("These drawings give a count. They do not print a sell price.")
+        return _unpriced_drawing_estimate(takeoff_output)
+
     if _takeoff_is_deterministic(takeoff_output):
         await progress("Pricing workbook take-off deterministically (catalogue + Bid Summary)…")
         result = build_estimate_from_takeoff(takeoff_output, wb)
@@ -48,6 +52,62 @@ async def run_estimation_agent(
         return result
 
     return await _run_llm_estimation(ctx, takeoff_output, wb, progress)
+
+
+def _unpriced_drawing_estimate(takeoff: dict) -> dict:
+    """A drawing set states how many openings there are. It does not state a price."""
+    total = takeoff.get("totalShadeCount")
+    summary = takeoff.get("summary") or ""
+    lines = []
+    for item in takeoff.get("takeoffItems") or []:
+        lines.append(
+            {
+                "id": item.get("windowTag"),
+                "windowTag": item.get("windowTag"),
+                "category": item.get("category") or "Window shade",
+                "item": item.get("item"),
+                "quantity": item.get("quantity"),
+                "unit": "EA",
+                "unitCost": None,
+                "laborCost": None,
+                "materialCost": None,
+                "totalCost": None,
+                "calculationFormula": item.get("calculationBasis") or "",
+                "notes": "No sell price is printed on these sheets.",
+            }
+        )
+    return {
+        "estimates": lines,
+        "shadeSummary": {
+            "totalShades": total,
+            "motorizedCount": 0,
+            "byType": [],
+            "totalSquareFeet": None,
+        },
+        "clientOffer": {
+            "headline": f"Window shade count — {total} shades",
+            "totalShades": total,
+            "totalPrice": None,
+            "pricePerShade": None,
+            "offerNarrative": (
+                f"{summary} These drawings do not print a sell price. "
+                "Add a price sheet when you want this count priced."
+            ).strip(),
+            "assumptions": [
+                "The count is the unit-matrix quantity times the window tags on each unit plan.",
+                "Lobby and amenity shades are not on the unit plans.",
+            ],
+            "validityNote": "The count is from the drawings. A price is not printed on these sheets.",
+        },
+        "subtotal": None,
+        "overhead": 0,
+        "profit": 0,
+        "totalEstimate": None,
+        "currency": "USD",
+        "priceSource": "not_on_drawings",
+        "assumptions": ["No price sheet was uploaded with the drawings."],
+        "executiveSummary": summary,
+    }
 
 
 def _takeoff_is_deterministic(takeoff: Optional[dict]) -> bool:

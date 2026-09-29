@@ -1017,7 +1017,11 @@ function renderProjectSummary(ps) {
     psCell('Matrix markings Σ', ps.markingSum, 'Sum of marking rows'),
     psCell('Blind QTY rows Σ', ps.blindQtySum, 'Sum of QTY columns'),
     psCell('Project total', ps.grandTotal != null ? fmt(ps.grandTotal, ps.currency) : null,
-      ps.priceSource === 'bid_summary' ? 'Anchored to Bid Summary' : 'Catalogue pricing'),
+      ps.priceSource === 'bid_summary'
+        ? 'Anchored to Bid Summary'
+        : ps.priceSource === 'not_on_drawings'
+          ? 'No price on these sheets'
+          : 'Catalogue pricing'),
     psCell('Per shade (avg)', ps.pricePerUnit != null ? fmt(ps.pricePerUnit, ps.currency) : null),
     psCell('Product sales price', ps.referenceGrandTotal != null ? fmt(ps.referenceGrandTotal, ps.currency) : null, 'Quoted tabs, shades only'),
     psCell('Sheet Total Bid', ps.clientTotal != null ? fmt(ps.clientTotal, ps.currency) : null, 'Includes installation, charges, and tax'),

@@ -54,6 +54,21 @@ class TestProjectSummary(unittest.TestCase):
         ps = _summary(wb, {"totalShadeCount": 4})
         self.assertEqual(ps["matchStatus"], "no_matrix")
 
+    def test_drawing_set_matches_when_unit_rows_equal_the_printed_total(self):
+        wb = {**self.wb, "authoritativeTotalShades": None, "projectShadeCount": None}
+        ps = _summary(
+            wb,
+            {
+                "dataSource": "drawing_set",
+                "totalShadeCount": 473,
+                "matrixUnitsRead": 144,
+                "matrixUnitsPrinted": 144,
+                "primarySource": "Unit matrix and unit plans",
+            },
+        )
+        self.assertEqual(ps["matchStatus"], "match")
+        self.assertIn("144", ps["matchNote"])
+
     def test_price_variance_against_bid_summary(self):
         wb = merge_workbook_analyses(
             [

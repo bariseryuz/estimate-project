@@ -90,6 +90,15 @@ def prepare_drawing_set(
                     "imageBase64": base64.b64encode(jpeg).decode("ascii"),
                 }
             )
+    printed_types = unit_types_from_floor_plans(classified)
+    if printed_types:
+        sheets.append(
+            {
+                "file": "floor-plan labels",
+                "role": "floor_plan_types",
+                "types": printed_types,
+            }
+        )
 
     by_role: dict[str, int] = {}
     for row in classified:
@@ -279,20 +288,94 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     units = {}
     for number, options in readings.items():
         type_names = [name for name, _qty in options]
-        chosen = max(set(type_names), key=type_names.count)
-        qty = next(item_qty for name, item_qty in options if name == chosen)
+        chosen = sorted(set(type_names), key=lambda name: (-type_names.count(name), name))[0]
+        qtys = [item_qty for name, item_qty in options if name == chosen]
+        qty = sorted(qtys, key=lambda item_qty: (-qtys.count(item_qty), item_qty))[0]
         units[number] = {"unit": number, "type": chosen, "qty": qty}
-    grouped: dict[str, dict[str, Any]] = {}
-    for unit in units.values():
-        key = norm_type(unit["type"])
-        bucket = grouped.setdefault(key, {"type": unit["type"], "count": 0})
-        bucket["count"] += unit["qty"]
+    grouped = _group_unit_types(list(units.values()))
     return {
         "units": list(units.values()),
-        "types": list(grouped.values()),
+        "types": grouped,
         "transcribedUnits": sum(unit["qty"] for unit in units.values()),
         "printedTotal": max(printed) if printed else None,
     }
+
+
+def unit_types_from_floor_plans(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    Apartment number to unit type, from text printed on the floor plans.
+
+    An overall floor plan wins. A partial plan fills a number the overall
+    sheets do not label, and only when those partials agree. Area diagrams
+    are not used.
+    """
+    overall_norm: dict[str, set[str]] = {}
+    overall_printed: dict[str, str] = {}
+    partial: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        if row.get("role") != "floor_plan":
+            continue
+        name = str(row.get("file") or "")
+        if "F.A.R" in name.upper():
+            continue
+        found = _UNIT_LINE.findall(row.get("text") or "")
+        if "PARTIAL" in name.upper():
+            for number, unit_type, _area in found:
+                partial.setdefault(number, set()).add((norm_type(unit_type), unit_type.upper()))
+            continue
+        for number, unit_type, _area in found:
+            overall_norm.setdefault(number, set()).add(norm_type(unit_type))
+            overall_printed[number] = unit_type.upper()
+    typed: dict[str, str] = {}
+    for number, norms in overall_norm.items():
+        if len(norms) == 1:
+            typed[number] = overall_printed[number]
+    for number, options in partial.items():
+        if number in typed:
+            continue
+        norms = {norm for norm, _printed in options}
+        if len(norms) != 1:
+            continue
+        hyphenated = [printed for _norm, printed in options if "-" in printed]
+        typed[number] = sorted(hyphenated or [printed for _norm, printed in options])[0]
+    return typed
+
+
+def apply_printed_unit_types(merged: dict[str, Any], printed_types: dict[str, str]) -> dict[str, Any]:
+    """Use a floor-plan label when that apartment number is printed in text."""
+    if not printed_types:
+        return merged
+    units = []
+    confirmed = 0
+    corrected = 0
+    for unit in merged.get("units") or []:
+        item = dict(unit)
+        printed = printed_types.get(str(item.get("unit") or "").upper())
+        if printed:
+            if norm_type(printed) == norm_type(str(item.get("type") or "")):
+                confirmed += 1
+            else:
+                corrected += 1
+            item["type"] = printed
+        units.append(item)
+    updated = dict(merged)
+    updated["units"] = units
+    updated["types"] = _group_unit_types(units)
+    updated["transcribedUnits"] = sum(int(unit.get("qty") or 0) for unit in units)
+    updated["typesFromFloorPlans"] = confirmed + corrected
+    updated["typesCorrected"] = corrected
+    return updated
+
+
+def _group_unit_types(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for unit in units:
+        key = norm_type(str(unit.get("type") or ""))
+        if not key:
+            continue
+        bucket = grouped.setdefault(key, {"type": unit["type"], "count": 0})
+        bucket["count"] += int(unit.get("qty") or 0)
+    return list(grouped.values())
 
 
 def _opening_count(plans: list[dict[str, Any]]) -> int:

@@ -44,7 +44,7 @@ def build_project_summary(
 
     counted = [n for n in (schedule_sum, takeoff_total, marking_sum, blind_sum) if n]
     status, status_note = _match_status(
-        matrix_total, project_total, additional, takeoff_total, schedule_sum, counted
+        matrix_total, project_total, additional, takeoff_total, schedule_sum, counted, takeoff
     )
 
     reference = wb.get("referencePricing") or {}
@@ -95,6 +95,7 @@ def _match_status(
     takeoff_total: Optional[int],
     schedule_sum: Optional[int],
     counted: list[int],
+    takeoff: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     The count to match is the project total: matrix TOTAL, plus shades in areas
@@ -105,7 +106,20 @@ def _match_status(
         authority = None
     else:
         authority = project_total if project_total is not None else matrix_total
+    drawing = takeoff or {}
     if authority is None:
+        read_units = drawing.get("matrixUnitsRead")
+        printed_units = drawing.get("matrixUnitsPrinted")
+        if drawing.get("dataSource") == "drawing_set" and printed_units and read_units == printed_units:
+            return "match", (
+                f"The unit matrix prints TOTAL UNITS {printed_units}, and the rows read add up to that. "
+                f"The shade count is {takeoff_total}."
+            )
+        if drawing.get("dataSource") == "drawing_set" and printed_units:
+            return "mismatch", (
+                f"The unit matrix prints TOTAL UNITS {printed_units}, "
+                f"but the rows that could be read add up to {read_units}."
+            )
         if takeoff_total:
             return "no_matrix", (
                 f"No WINDOW MATRIX TOTAL row was found; the count of {takeoff_total} comes "

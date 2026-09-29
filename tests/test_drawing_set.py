@@ -2,12 +2,16 @@
 
 import unittest
 
+from agents.estimation_agent import _unpriced_drawing_estimate
+
 from domain.drawing_set import (
+    apply_printed_unit_types,
     classify_sheet,
     combine_counts,
     merge_unit_rows,
     norm_type,
     type_from_filename,
+    unit_types_from_floor_plans,
 )
 
 
@@ -66,6 +70,67 @@ class TestDrawingSet(unittest.TestCase):
         b1 = next(line for line in combined["lines"] if line["windowTag"] == "B-1")
         self.assertEqual(b1["quantity"], 16)
         self.assertIn("UNIT-B-1-Rev", b1["sourceLocation"])
+
+    def test_a_tied_matrix_reading_picks_one_type_every_time(self):
+        merged = merge_unit_rows(
+            [
+                {"units": [{"unit": "301", "type": "B-4", "qty": 1}], "printedTotals": [2]},
+                {"units": [{"unit": "301", "type": "A-5", "qty": 1}], "printedTotals": []},
+            ]
+        )
+        self.assertEqual(merged["units"][0]["type"], "A-5")
+
+    def test_floor_plan_text_replaces_a_wrong_matrix_type(self):
+        typed = unit_types_from_floor_plans(
+            [
+                {
+                    "file": "A-1.01-GROUND-FLOOR.pdf",
+                    "role": "floor_plan",
+                    "text": "UNIT 201\nB-4\n850 SF\nUNIT 202\nA-5\n900 SF",
+                },
+                {
+                    "file": "A-1.10-PARTIAL-THIRD-FLOOR.pdf",
+                    "role": "floor_plan",
+                    "text": "UNIT 601\nC-1\n1400 SF\nUNIT 201\nA-9\n850 SF",
+                },
+                {
+                    "file": "A-0.12-F.A.R.-GROUND-FLOOR.pdf",
+                    "role": "floor_plan",
+                    "text": "UNIT 201\nB-9\n850 SF",
+                },
+            ]
+        )
+        self.assertEqual(typed["201"], "B-4")
+        self.assertEqual(typed["601"], "C-1")
+        merged = apply_printed_unit_types(
+            {
+                "units": [
+                    {"unit": "201", "type": "A-1", "qty": 1},
+                    {"unit": "601", "type": "C-1", "qty": 1},
+                ],
+                "types": [],
+                "transcribedUnits": 2,
+                "printedTotal": 2,
+            },
+            typed,
+        )
+        types = {row["type"]: row["count"] for row in merged["types"]}
+        self.assertEqual(types, {"B-4": 1, "C-1": 1})
+        self.assertEqual(merged["typesCorrected"], 1)
+        self.assertEqual(merged["typesFromFloorPlans"], 2)
+
+    def test_a_drawing_set_is_not_given_a_made_up_price(self):
+        estimate = _unpriced_drawing_estimate(
+            {
+                "totalShadeCount": 10,
+                "summary": "10 window shades.",
+                "takeoffItems": [{"windowTag": "A-1", "quantity": 10, "item": "Shades for unit A-1"}],
+            }
+        )
+        self.assertIsNone(estimate["totalEstimate"])
+        self.assertEqual(estimate["priceSource"], "not_on_drawings")
+        self.assertEqual(estimate["estimates"][0]["quantity"], 10)
+        self.assertIsNone(estimate["estimates"][0]["totalCost"])
 
 
 if __name__ == "__main__":
