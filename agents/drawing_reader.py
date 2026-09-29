@@ -128,8 +128,8 @@ async def read_drawing_set(
         f"{combined['total']} window shades, {window_total} windows, {blind_total} blinds, across {unit_label}."
     )
     methodology = (
-        "Unit-matrix rows give the count of each unit type. "
-        "Each type is multiplied by the shade openings on its unit plan. "
+        "The unit matrix counts apartments. It is not a shade count. "
+        "A roller shade is a window mark on the unit plan, multiplied by the apartments of that type. "
         + " ".join(notes)
     )
     lines = []

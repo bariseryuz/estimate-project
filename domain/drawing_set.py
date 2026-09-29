@@ -252,7 +252,7 @@ def combine_counts(
         if key:
             plans_by_type.setdefault(key, []).append(row)
 
-    lines = []
+    contributions = []
     unmatched = []
     total = 0
     for entry in matrix_types:
@@ -275,35 +275,45 @@ def combine_counts(
             unmatched.append(code)
             continue
         openings = _opening_count(plans)
-        plan = _plan_with_opening_count(plans, openings)
+        plan = _plan_with_opening_count(plans, openings) or plans[0]
+        source = plan.get("file") or "unit plan"
+        mark_lines = _lines_for_tags(code, count, plan, source, sizes or {})
+        if mark_lines:
+            contributions.extend(mark_lines)
+            total += sum(int(line["quantity"]) for line in mark_lines)
+            continue
+        if openings <= 0:
+            unmatched.append(code)
+            continue
+        # No window mark was drawn. The apartment count is not a shade count.
         shades = count * openings
         total += shades
-        source = (plan or plans[0]).get("file") or "unit plan"
-        tag_lines = _lines_for_tags(code, count, plan or plans[0], source, sizes or {})
-        if tag_lines:
-            lines.extend(tag_lines)
-            continue
-        lines.append(
+        contributions.append(
             {
-                "windowTag": code,
+                "windowTag": "shade",
+                "unitType": code,
+                "apartmentCount": count,
                 "quantity": shades,
                 "unit": "EA",
                 "floor": "",
-                "room": code,
+                "room": "",
                 "areaSection": "Residential units",
                 "category": "Window shade",
-                "item": f"Shades for unit {code}",
+                "item": f"Roller shades on unit {code}",
                 "productKind": "Shade",
-                "sourceLocation": f"{source} × {count} units on the unit matrix",
+                "width": "",
+                "height": "",
+                "sourceLocation": source,
                 "calculationBasis": (
-                    f"{count} units of {code} on the unit matrix × {openings} shade opening"
-                    f"{'s' if openings != 1 else ''} on {source}"
+                    f"{count} apartments of {code} × {openings} shade opening"
+                    f"{'s' if openings != 1 else ''} on {source}. "
+                    "The apartment count is not the shade count."
                 ),
                 "dataSource": "drawing_set",
-                "notes": plans[0].get("notes") or "",
+                "notes": plan.get("notes") or "",
             }
         )
-    return {"lines": lines, "total": total, "unmatched": unmatched}
+    return {"lines": _shade_lines(contributions), "total": total, "unmatched": unmatched}
 
 
 def _plan_with_opening_count(plans: list[dict[str, Any]], openings: int) -> Optional[dict[str, Any]]:
@@ -326,20 +336,13 @@ def _lines_for_tags(
     source: str,
     sizes: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """One line per window mark when the plan's shade tags add up to its shade count."""
+    """One line per window mark. The apartment count multiplies those marks. It is not itself a shade."""
     tags = [
         tag
         for tag in (plan.get("tags") or [])
         if isinstance(tag, dict) and not str(tag.get("room") or "").upper().startswith("BATH")
     ]
-    openings = plan.get("shadeOpenings")
-    if openings is None:
-        openings = plan.get("shades")
-    try:
-        opening_count = int(openings or 0)
-    except (TypeError, ValueError):
-        return []
-    if not tags or len(tags) != opening_count:
+    if not tags:
         return []
     grouped: dict[str, dict[str, Any]] = {}
     for tag in tags:
@@ -367,27 +370,64 @@ def _lines_for_tags(
             {
                 "windowTag": mark,
                 "unitType": unit_code,
+                "apartmentCount": unit_count,
+                "perApartment": int(bucket["n"]),
                 "quantity": quantity,
                 "unit": "EA",
                 "floor": "",
-                "room": rooms or unit_code,
+                "room": rooms,
                 "areaSection": "Residential units",
                 "category": "Window shade",
-                "item": f"{mark} shades for unit {unit_code}",
+                "item": f"{mark} roller shades",
                 "productKind": "Shade",
                 "width": width,
                 "height": height,
                 "widthInches": size.get("widthInches"),
                 "heightInches": size.get("heightInches"),
-                "sourceLocation": f"{source} mark {mark} × {unit_count} units of {unit_code}",
+                "sourceLocation": source,
                 "calculationBasis": (
-                    f"{unit_count} units of {unit_code} × {bucket['n']} {mark} opening"
-                    f"{'s' if bucket['n'] != 1 else ''} on {source}. {size_note}."
+                    f"{unit_count} apartments of {unit_code} × {bucket['n']} {mark} "
+                    f"on {source}. {size_note}."
                 ),
                 "dataSource": "drawing_set",
                 "notes": plan.get("notes") or "",
             }
         )
+    return lines
+
+
+def _shade_lines(contributions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One line per window mark. Apartment types that share a mark are added, not listed as shades."""
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for line in contributions:
+        mark = str(line.get("windowTag") or "")
+        key = mark if mark and mark != "shade" else f"shade:{line.get('unitType')}"
+        if key not in grouped:
+            grouped[key] = dict(line)
+            grouped[key]["quantity"] = 0
+            grouped[key]["_parts"] = []
+            order.append(key)
+        bucket = grouped[key]
+        bucket["quantity"] += int(line.get("quantity") or 0)
+        part = line.get("calculationBasis") or ""
+        if part:
+            bucket["_parts"].append(part)
+        if line.get("width") and not bucket.get("width"):
+            bucket["width"] = line.get("width")
+            bucket["height"] = line.get("height")
+            bucket["widthInches"] = line.get("widthInches")
+            bucket["heightInches"] = line.get("heightInches")
+    lines = []
+    for key in order:
+        line = grouped[key]
+        parts = line.pop("_parts", [])
+        if len(parts) > 1:
+            line["calculationBasis"] = " ".join(parts)
+            line["unitType"] = ""
+        elif parts:
+            line["calculationBasis"] = parts[0]
+        lines.append(line)
     return lines
 
 

@@ -69,9 +69,42 @@ class TestDrawingSet(unittest.TestCase):
         )
         self.assertEqual(combined["total"], 10 * 3 + 4 * 4)
         self.assertEqual(combined["unmatched"], ["C-9"])
-        b1 = next(line for line in combined["lines"] if line["windowTag"] == "B-1")
+        b1 = next(line for line in combined["lines"] if line.get("unitType") == "B-1")
         self.assertEqual(b1["quantity"], 16)
+        self.assertEqual(b1["apartmentCount"], 4)
+        self.assertNotEqual(b1["windowTag"], "B-1")
         self.assertIn("UNIT-B-1-Rev", b1["sourceLocation"])
+
+    def test_apartment_count_is_not_used_as_the_shade_count(self):
+        combined = combine_counts(
+            [{"type": "A-1", "count": 10}, {"type": "B-1", "count": 4}],
+            [
+                {
+                    "unitType": "A-1",
+                    "shadeOpenings": 1,
+                    "tags": [{"tag": "U2", "room": "LIVING"}],
+                    "file": "UNIT-A-1.pdf",
+                },
+                {
+                    "unitType": "B-1",
+                    "shadeOpenings": 1,
+                    "tags": [{"tag": "U2", "room": "BEDROOM"}],
+                    "file": "UNIT-B-1.pdf",
+                },
+            ],
+        )
+        self.assertEqual(combined["total"], 14)
+        self.assertEqual(len(combined["lines"]), 1)
+        line = combined["lines"][0]
+        self.assertEqual(line["windowTag"], "U2")
+        self.assertEqual(line["quantity"], 14)
+        self.assertNotEqual(line["quantity"], 10)
+        none = combine_counts(
+            [{"type": "A-1", "count": 10}],
+            [{"unitType": "A-1", "shadeOpenings": 0, "file": "UNIT-A-1.pdf"}],
+        )
+        self.assertEqual(none["total"], 0)
+        self.assertEqual(none["lines"], [])
 
     def test_a_tied_matrix_reading_picks_one_type_every_time(self):
         merged = merge_unit_rows(
