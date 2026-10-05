@@ -18,15 +18,18 @@ from domain.drawing_set import apply_printed_unit_types, combine_counts, merge_u
 ProgressCallback = Callable[[str], Awaitable[None]]
 
 _TILE_PROMPT = """This image is one crop of a unit-matrix sheet.
-The columns are UNIT #, UNIT TYPE, DESCRIPTION.
-Copy a row only when UNIT # is an apartment number such as 201, 415, or LW-103, and UNIT TYPE is a plan code such as A-2, B-1A, or C-3.
+The columns include UNIT #, UNIT TYPE, and often a floor and # OF UNITS.
+Copy a row only when UNIT # is an apartment number such as 201, 415, or LW-103, and UNIT TYPE is a plan code such as A-2, B-1A, or A-1A.
 DESCRIPTION (1BR/1BATH, 2BR+2BATH, 3BR+2BATH) is not the type. Do not use it as the type.
-Skip TOTAL lines, bedroom-mix subtotals (1+1, 2+2, 3+2), and any unit marked NOT USED.
+Skip TOTAL lines, floor subtotals, bedroom-mix subtotals, and any unit marked NOT USED or quantity 0.
+Do not add a subtotal or the building total into the units list.
 qty is the # OF UNITS column. Use 1 when that column is blank or shows 1.
-If this crop prints TOTAL UNITS as a count of apartments, put that integer in printedTotals.
-Do not invent rows.
+floor is the printed floor for that row, or "" when the crop does not show one.
+If this crop prints TOTAL UNITS, put that integer in printedTotals.
+If this crop prints a floor subtotal, put it in floorTotals and not in units.
+Do not invent rows. Keep A-1a, A-1b, and A-1c as printed. Do not shorten them to A-1.
 Return JSON:
-{"units": [{"unit": "201", "type": "B-4", "qty": 1}], "printedTotals": []}"""
+{"units": [{"unit": "LW-104", "type": "A-1A", "qty": 1, "floor": "ground"}], "printedTotals": [], "floorTotals": [{"floor": "ground", "total": 3}]}"""
 
 _PLAN_PROMPT = """Each image is one residential unit-plan sheet. The line before the image is the file name.
 Count only the floor plan, not the interior elevations or the kitchen blow-ups.
@@ -66,13 +69,47 @@ async def read_drawing_set(
     plan_rows = [_plan_from_openings(sheet) for sheet in measured]
     if unread:
         plan_rows.extend(await _read_plans(unread, progress))
-    sizes: dict[str, Any] = {}
-    size_file = ""
+    schedules: list[dict[str, Any]] = []
+    size_files: list[str] = []
     for sheet in sheets:
-        if sheet.get("role") == "window_sizes" and isinstance(sheet.get("sizes"), dict):
-            sizes.update(sheet["sizes"])
-            size_file = str(sheet.get("file") or size_file)
-    combined = combine_counts(merged["types"], plan_rows, sizes)
+        dictionary = sheet.get("dictionary")
+        if isinstance(dictionary, list):
+            schedules.extend(dictionary)
+            if sheet.get("file"):
+                size_files.append(str(sheet["file"]))
+        elif sheet.get("role") == "window_sizes" and isinstance(sheet.get("sizes"), dict):
+            size_files.append(str(sheet.get("file") or ""))
+    from domain.architectural_reader import reconcile_floor_totals
+
+    project_id = ""
+    drawing_set_id = ""
+    project_names: list[str] = []
+    inventory_exceptions: list[dict[str, Any]] = []
+    for sheet in sheets:
+        if sheet.get("role") == "reader_context":
+            project_id = str(sheet.get("projectId") or "")
+            drawing_set_id = str(sheet.get("drawingSetId") or "")
+            project_names = list(sheet.get("projectNames") or [])
+            inventory_exceptions = list(sheet.get("readerExceptions") or [])
+    combined = combine_counts(
+        merged["types"],
+        plan_rows,
+        schedules=schedules,
+        matrix_units=merged.get("units"),
+        project_id=project_id,
+        drawing_set_id=drawing_set_id,
+        project_names=project_names,
+    )
+    combined["exceptions"] = inventory_exceptions + list(combined.get("exceptions") or [])
+    combined["exceptions"].extend(
+        reconcile_floor_totals(
+            merged.get("units") or [],
+            merged.get("floorTotals") or [],
+            project_id=project_id,
+            printed_total=merged.get("printedTotal"),
+            transcribed=merged.get("transcribedUnits"),
+        )
+    )
 
     window_total = 0
     blind_total = 0
@@ -96,6 +133,9 @@ async def read_drawing_set(
         )
     elif printed is not None:
         notes.append(f"Unit rows add up to the printed TOTAL UNITS of {printed}.")
+    opening_quantity = combined.get("openingQuantity") or 0
+    provisional_quantity = combined.get("provisionalQuantity") or 0
+    unresolved_quantity = combined.get("unresolvedQuantity") or 0
     from_plans = merged.get("typesFromFloorPlans") or 0
     corrected = merged.get("typesCorrected") or 0
     if from_plans:
@@ -110,37 +150,53 @@ async def read_drawing_set(
     if combined["unmatched"]:
         notes.append("No matching unit plan for: " + ", ".join(combined["unmatched"]) + ".")
     sized = sum(1 for line in combined["lines"] if line.get("width") and line.get("height"))
-    if sizes:
+    if schedules:
+        names = ", ".join(dict.fromkeys(size_files))
         notes.append(
-            f"Width and height come from the window schedule{(' ' + size_file) if size_file else ''}. "
-            f"{sized} of {len(combined['lines'])} shade lines have both cells printed. "
-            "A mark with a blank size cell is left blank. Elevation dimensions are not used."
+            f"Width and height come from the schedule columns{(' on ' + names) if names else ''}. "
+            f"{sized} released or provisional opening lines have both cells printed. "
+            "A blank cell stays blank. A mark with two sizes is not given either size. "
+            "Elevation dimensions are not used."
         )
     notes.append(
-        "Each shade is a window tag drawn on the unit floor plan, in living, dining, bedroom, den, or kitchen. "
-        "Square door tags, sliding doors, storefront, and exterior sunshades are not included. "
-        "A bathroom window is counted as a window and not as a shade."
+        f"Verified openings: {opening_quantity}. Provisional openings: {provisional_quantity}. "
+        f"Unresolved openings: {unresolved_quantity}. Unresolved is not zero and is not released."
     )
-    notes.append("Lobby and amenity shades are not on the unit plans, so they are not in this total.")
+    notes.append(
+        "Each count is a physical opening on the unit floor plan, multiplied by the matrix units of that subtype. "
+        "Door type A is not window A. Opaque doors are excluded. "
+        "Glazed doors and storefronts stay in scope review. Shade quantity is not set."
+    )
+    notes.append("Common-area openings are not added to the unit-matrix expansion.")
 
     unit_label = f"{printed} units" if printed is not None else f"{transcribed} units"
     summary = (
-        f"{combined['total']} window shades, {window_total} windows, {blind_total} blinds, across {unit_label}."
+        f"{opening_quantity} verified openings, {provisional_quantity} provisional, "
+        f"{unresolved_quantity} unresolved, across {unit_label}. Shade quantity is not set."
     )
     methodology = (
-        "The unit matrix counts apartments. It is not a shade count. "
-        "A roller shade is a window mark on the unit plan, multiplied by the apartments of that type. "
+        "Schedules are read first. Each physical opening is counted once, then multiplied by the "
+        "matrix count of that exact subtype. The product is an architectural opening quantity. "
         + " ".join(notes)
     )
     lines = []
     for line in combined["lines"]:
         line["calculationBasis"] = line["calculationBasis"] + ". " + methodology
+        line["shade_quantity"] = None
         lines.append(line)
 
     takeoff = {
         "takeoffItems": lines,
-        "totalShadeCount": combined["total"],
-        "countShades": combined["total"],
+        "unresolvedItems": combined.get("unresolvedLines") or [],
+        "excludedItems": combined.get("excluded") or [],
+        "exceptions": combined.get("exceptions") or [],
+        "aliases": combined.get("aliases") or [],
+        "totalShadeCount": None,
+        "countShades": None,
+        "shadeQuantity": None,
+        "openingQuantity": opening_quantity,
+        "provisionalQuantity": provisional_quantity,
+        "unresolvedQuantity": unresolved_quantity,
         "countBlinds": blind_total,
         "countScreens": 0,
         "motorizedCount": 0,
@@ -158,10 +214,13 @@ async def read_drawing_set(
         "pagesAnalyzed": len({sheet["file"] for sheet in matrix + plans}),
         "totalPagesInFile": len({sheet["file"] for sheet in sheets}),
         "allPagesAnalyzed": False,
-        "estimatedTotalShades": combined["total"],
+        "estimatedTotalShades": None,
+        "openingQuantity": opening_quantity,
+        "provisionalQuantity": provisional_quantity,
+        "unresolvedQuantity": unresolved_quantity,
         "estimatedTotalWindows": window_total,
         "estimatedTotalBlinds": blind_total,
-        "shadesRequired": True if combined["total"] else None,
+        "shadesRequired": None,
         "windowOpenings": [
             {
                 "tag": line["windowTag"],
@@ -184,15 +243,26 @@ def _plan_from_openings(sheet: dict[str, Any]) -> dict[str, Any]:
     from domain.drawing_set import type_from_filename
 
     openings = sheet.get("openings") or {}
-    shades = int(openings.get("shades") or 0)
+    physical = list(openings.get("openings") or [])
+    for untagged in openings.get("untagged") or []:
+        physical.append(
+            {
+                "opening_class": "WINDOW",
+                "mark": "",
+                "room": "",
+                "untagged": True,
+                "bounding_box": untagged.get("bounding_box"),
+            }
+        )
     return {
         "file": sheet.get("file") or "",
         "unitType": type_from_filename(str(sheet.get("file") or "")),
         "windows": int(openings.get("windows") or 0),
-        "shades": shades,
-        "shadeOpenings": shades,
+        "shades": int(openings.get("shades") or 0),
         "blinds": int(openings.get("blinds") or 0),
         "tags": openings.get("tags") or [],
+        "openings": physical,
+        "doors": openings.get("doors") or [],
         "notes": openings.get("notes") or "",
     }
 

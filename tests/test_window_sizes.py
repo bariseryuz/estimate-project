@@ -83,6 +83,7 @@ class TestWindowSizes(unittest.TestCase):
             {"W1": {"width": "3'-0\"", "height": "6'-0\"", "widthInches": 36, "heightInches": 72}},
         )
         self.assertEqual(combined["total"], 20)
+        self.assertIsNone(combined["shadeQuantity"])
         self.assertEqual(len(combined["lines"]), 1)
         line = combined["lines"][0]
         self.assertEqual(line["windowTag"], "W1")

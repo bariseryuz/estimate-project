@@ -72,8 +72,17 @@ def prepare_drawing_set(
     if "unit_plan" not in roles and "unit_matrix" not in roles and "window_schedule" not in roles:
         return None
 
+    identities = project_identities(classified)
+    from domain.architectural_reader import lock_drawing_set
+
+    locked = lock_drawing_set(
+        [{"file": row["file"], "data": row["data"]} for row in classified],
+        identities,
+    )
+    usable = set(locked["usable_files"])
+    classified = [row for row in classified if row["file"] in usable]
     units = _units_from_floor_plans(classified)
-    project = _project_name(classified)
+    project = locked["project_name"] or _project_name(classified)
 
     sheets = []
     plan_rows = [row for row in classified if row["role"] == "unit_plan"]
@@ -106,18 +115,36 @@ def prepare_drawing_set(
                     "imageBase64": base64.b64encode(jpeg).decode("ascii"),
                 }
             )
-    from domain.window_sizes import read_window_sizes
+    from domain.window_sizes import read_schedule_dictionary, read_window_sizes
 
+    schedule_roles = {
+        "window_schedule": "WINDOW",
+        "door_schedule": "DOOR",
+        "storefront_schedule": "STOREFRONT",
+    }
     for row in classified:
-        if row["role"] != "window_schedule":
+        if row["role"] not in schedule_roles:
             continue
-        sizes = read_window_sizes(row["data"])
-        if sizes:
+        sizes = read_window_sizes(row["data"]) if row["role"] == "window_schedule" else None
+        dictionary = read_schedule_dictionary(row["data"], schedule_roles[row["role"]])
+        for record in dictionary:
+            record["source_file"] = row["file"]
+            record["source_file_hash"] = next(
+                (sheet["file_hash"] for sheet in locked["sheets"] if sheet["file"] == row["file"]),
+                "",
+            )
+            record["revision"] = next(
+                (sheet["revision"] for sheet in locked["sheets"] if sheet["file"] == row["file"]),
+                "",
+            )
+        if sizes or dictionary:
             sheets.append(
                 {
                     "file": row["file"],
-                    "role": "window_sizes",
-                    "sizes": sizes,
+                    "role": "window_sizes" if row["role"] == "window_schedule" else "schedule_dictionary",
+                    "sizes": sizes or {},
+                    "dictionary": dictionary,
+                    "openingClass": schedule_roles[row["role"]],
                 }
             )
 
@@ -153,18 +180,48 @@ def prepare_drawing_set(
         shown = ", ".join(f"{code} × {count}" for code, count in sorted(type_counts.items())[:24])
         brief_lines.append(f"Unit types labeled on the floor plans: {shown}.")
     brief_lines.append(
-        "Shade count is the unit-matrix count of each unit times the window tags drawn on that unit's floor plan. "
-        "Square door tags, sliding doors, and exterior sunshades are not shades. "
-        "A bathroom window is a window and not a shade."
+        "Read the window, storefront, and door schedules before counting. "
+        "Each physical opening on a unit floor plan is counted once. "
+        "Reflected ceiling plans and elevations are not extra openings. "
+        "The unit matrix multiplies that count. The result is an architectural opening quantity, not a shade quantity."
     )
+    sheets.append(
+        {
+            "file": "drawing-set",
+            "role": "reader_context",
+            "projectId": locked["project_id"],
+            "drawingSetId": locked["drawing_set_id"],
+            "projectNames": locked["project_names"],
+            "readerExceptions": locked["exceptions"],
+        }
+    )
+    if locked["separated"]:
+        brief_lines.append(
+            "More than one project is in this upload. Their counts are not combined."
+        )
+    if locked["duplicates"]:
+        brief_lines.append(f"Exact duplicate files set aside: {len(locked['duplicates'])}.")
+    if any(item["issue_code"] == "REVISION_CONFLICT" for item in locked["exceptions"]):
+        brief_lines.append("Sheets with an uncertain revision were not used.")
 
     return {
         "projectName": project,
+        "projectId": locked["project_id"],
+        "drawingSetId": locked["drawing_set_id"],
+        "projectNames": locked["project_names"],
+        "separated": locked["separated"],
+        "inventory": locked["sheets"],
+        "duplicates": locked["duplicates"],
+        "readerExceptions": locked["exceptions"],
         "sheetCount": len(pdfs),
         "roles": by_role,
         "floorPlanUnits": len(units),
         "brief": "\n".join(brief_lines),
-        "sheets": sheets,
+        "sheets": (
+            [sheet for sheet in sheets if sheet.get("role") == "reader_context"]
+            if locked["separated"]
+            else sheets
+        ),
     }
 
 
@@ -173,6 +230,10 @@ def classify_sheet(name: str, text: str) -> str:
     file_name = name.lower()
     if "unit matrix" in blob or "unit-matrix" in file_name:
         return "unit_matrix"
+    if "door schedule" in blob or ("door" in file_name and "schedule" in file_name and "window" not in file_name):
+        return "door_schedule"
+    if "storefront" in blob and "schedule" in blob and "window" not in blob:
+        return "storefront_schedule"
     if "window schedule" in blob or ("window" in file_name and "schedule" in file_name):
         return "window_schedule"
     if re.search(r"unit[-_ ]+[a-z0-9]", file_name) and "matrix" not in file_name:
@@ -218,7 +279,7 @@ def filenames_needing_text(names: list[str]) -> list[str]:
         if role == "floor_plan":
             needed.append(name)
             continue
-        if role in ("unit_plan", "unit_matrix", "window_schedule"):
+        if role in ("unit_plan", "unit_matrix", "window_schedule", "door_schedule", "storefront_schedule"):
             continue
         lower = name.lower()
         if "plan" in lower and not any(skip in lower for skip in _SKIP_TEXT):
@@ -237,198 +298,31 @@ def combine_counts(
     matrix_types: list[dict[str, Any]],
     plan_rows: list[dict[str, Any]],
     sizes: Optional[dict[str, dict[str, Any]]] = None,
+    schedules: Optional[list[dict[str, Any]]] = None,
+    *,
+    matrix_units: Optional[list[dict[str, Any]]] = None,
+    project_id: str = "",
+    drawing_set_id: str = "",
+    project_names: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """
-    Multiply each matrix unit count by the shade openings on that unit's plan.
+    Multiply plan openings by the matrix count of that exact subtype.
 
-    Several sheets can describe one type (A-1a, A-1b). They are alternates, not
-    extras, so one opening count is used per type.
+    A-1a, A-1b, and A-1c stay separate. A-1A matches A-1-a only as a formatting
+    alias. The result is an opening count. Shade quantity is left empty.
     """
-    plans_by_type: dict[str, list[dict[str, Any]]] = {}
-    for row in plan_rows:
-        key = norm_type(str(row.get("unitType") or ""))
-        if not key:
-            key = norm_type(str(row.get("file") or ""))
-        if key:
-            plans_by_type.setdefault(key, []).append(row)
+    from domain.architectural_reader import expand_openings
 
-    contributions = []
-    unmatched = []
-    total = 0
-    for entry in matrix_types:
-        code = str(entry.get("type") or "").strip()
-        try:
-            count = int(entry.get("count") or 0)
-        except (TypeError, ValueError):
-            count = 0
-        if not code or count <= 0:
-            continue
-        key = norm_type(code)
-        plans = plans_by_type.get(key) or []
-        if not plans:
-            plans = [
-                row
-                for row in plan_rows
-                if key and norm_type(type_from_filename(str(row.get("file") or ""))) == key
-            ]
-        if not plans:
-            unmatched.append(code)
-            continue
-        openings = _opening_count(plans)
-        plan = _plan_with_opening_count(plans, openings) or plans[0]
-        source = plan.get("file") or "unit plan"
-        mark_lines = _lines_for_tags(code, count, plan, source, sizes or {})
-        if mark_lines:
-            contributions.extend(mark_lines)
-            total += sum(int(line["quantity"]) for line in mark_lines)
-            continue
-        if openings <= 0:
-            unmatched.append(code)
-            continue
-        # No window mark was drawn. The apartment count is not a shade count.
-        shades = count * openings
-        total += shades
-        contributions.append(
-            {
-                "windowTag": "shade",
-                "unitType": code,
-                "apartmentCount": count,
-                "quantity": shades,
-                "unit": "EA",
-                "floor": "",
-                "room": "",
-                "areaSection": "Residential units",
-                "category": "Window shade",
-                "item": f"Roller shades on unit {code}",
-                "productKind": "Shade",
-                "width": "",
-                "height": "",
-                "sourceLocation": source,
-                "calculationBasis": (
-                    f"{count} apartments of {code} × {openings} shade opening"
-                    f"{'s' if openings != 1 else ''} on {source}. "
-                    "The apartment count is not the shade count."
-                ),
-                "dataSource": "drawing_set",
-                "notes": plan.get("notes") or "",
-            }
-        )
-    return {"lines": _shade_lines(contributions), "total": total, "unmatched": unmatched}
-
-
-def _plan_with_opening_count(plans: list[dict[str, Any]], openings: int) -> Optional[dict[str, Any]]:
-    for row in plans:
-        raw = row.get("shadeOpenings")
-        if raw is None:
-            raw = row.get("shades")
-        try:
-            if int(raw or 0) == openings:
-                return row
-        except (TypeError, ValueError):
-            continue
-    return plans[0] if plans else None
-
-
-def _lines_for_tags(
-    unit_code: str,
-    unit_count: int,
-    plan: dict[str, Any],
-    source: str,
-    sizes: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """One line per window mark. The apartment count multiplies those marks. It is not itself a shade."""
-    tags = [
-        tag
-        for tag in (plan.get("tags") or [])
-        if isinstance(tag, dict) and not str(tag.get("room") or "").upper().startswith("BATH")
-    ]
-    if not tags:
-        return []
-    grouped: dict[str, dict[str, Any]] = {}
-    for tag in tags:
-        mark = str(tag.get("tag") or "").strip().upper()
-        if not mark:
-            return []
-        bucket = grouped.setdefault(mark, {"n": 0, "rooms": []})
-        bucket["n"] += 1
-        room = str(tag.get("room") or "").strip()
-        if room and room not in bucket["rooms"]:
-            bucket["rooms"].append(room)
-    lines = []
-    for mark, bucket in grouped.items():
-        size = sizes.get(mark) or {}
-        quantity = unit_count * int(bucket["n"])
-        rooms = ", ".join(bucket["rooms"])
-        width = size.get("width") or ""
-        height = size.get("height") or ""
-        size_note = (
-            f"{width} × {height} on the window schedule"
-            if width and height
-            else "width and height are not printed in that mark's schedule cells"
-        )
-        lines.append(
-            {
-                "windowTag": mark,
-                "unitType": unit_code,
-                "apartmentCount": unit_count,
-                "perApartment": int(bucket["n"]),
-                "quantity": quantity,
-                "unit": "EA",
-                "floor": "",
-                "room": rooms,
-                "areaSection": "Residential units",
-                "category": "Window shade",
-                "item": f"{mark} roller shades",
-                "productKind": "Shade",
-                "width": width,
-                "height": height,
-                "widthInches": size.get("widthInches"),
-                "heightInches": size.get("heightInches"),
-                "sourceLocation": source,
-                "calculationBasis": (
-                    f"{unit_count} apartments of {unit_code} × {bucket['n']} {mark} "
-                    f"on {source}. {size_note}."
-                ),
-                "dataSource": "drawing_set",
-                "notes": plan.get("notes") or "",
-            }
-        )
-    return lines
-
-
-def _shade_lines(contributions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One line per window mark. Apartment types that share a mark are added, not listed as shades."""
-    grouped: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for line in contributions:
-        mark = str(line.get("windowTag") or "")
-        key = mark if mark and mark != "shade" else f"shade:{line.get('unitType')}"
-        if key not in grouped:
-            grouped[key] = dict(line)
-            grouped[key]["quantity"] = 0
-            grouped[key]["_parts"] = []
-            order.append(key)
-        bucket = grouped[key]
-        bucket["quantity"] += int(line.get("quantity") or 0)
-        part = line.get("calculationBasis") or ""
-        if part:
-            bucket["_parts"].append(part)
-        if line.get("width") and not bucket.get("width"):
-            bucket["width"] = line.get("width")
-            bucket["height"] = line.get("height")
-            bucket["widthInches"] = line.get("widthInches")
-            bucket["heightInches"] = line.get("heightInches")
-    lines = []
-    for key in order:
-        line = grouped[key]
-        parts = line.pop("_parts", [])
-        if len(parts) > 1:
-            line["calculationBasis"] = " ".join(parts)
-            line["unitType"] = ""
-        elif parts:
-            line["calculationBasis"] = parts[0]
-        lines.append(line)
-    return lines
+    return expand_openings(
+        matrix_types,
+        plan_rows,
+        sizes,
+        schedules,
+        matrix_units=matrix_units,
+        project_id=project_id,
+        drawing_set_id=drawing_set_id,
+        project_names=project_names,
+    )
 
 
 _UNIT_NUMBER = re.compile(r"^(?:LW-)?\d{2,4}$", re.IGNORECASE)
@@ -465,8 +359,9 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     printedTotal is the largest TOTAL UNITS figure on the sheet, which is the
     grand total rather than a single floor's subtotal.
     """
-    readings: dict[str, list[tuple[str, int]]] = {}
+    readings: dict[str, list[tuple[str, int, str]]] = {}
     printed: list[int] = []
+    floor_totals: list[dict[str, Any]] = []
     for payload in tile_payloads:
         for row in payload.get("units") or []:
             if not isinstance(row, dict):
@@ -486,7 +381,8 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
                 qty = 1
             if qty <= 0:
                 continue
-            readings.setdefault(number, []).append((unit_type, qty))
+            floor = str(row.get("floor") or "").strip()
+            readings.setdefault(number, []).append((unit_type, qty, floor))
         for value in payload.get("printedTotals") or []:
             try:
                 total = int(value)
@@ -494,19 +390,30 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             if 0 < total < 5000:
                 printed.append(total)
+        for row in payload.get("floorTotals") or []:
+            if isinstance(row, dict) and row.get("floor"):
+                floor_totals.append({"floor": str(row.get("floor")), "total": row.get("total")})
     units = {}
     for number, options in readings.items():
-        type_names = [name for name, _qty in options]
+        type_names = [name for name, _qty, _floor in options]
         chosen = sorted(set(type_names), key=lambda name: (-type_names.count(name), name))[0]
-        qtys = [item_qty for name, item_qty in options if name == chosen]
+        chosen_rows = [(item_qty, floor) for name, item_qty, floor in options if name == chosen]
+        qtys = [item_qty for item_qty, _floor in chosen_rows]
         qty = sorted(qtys, key=lambda item_qty: (-qtys.count(item_qty), item_qty))[0]
-        units[number] = {"unit": number, "type": chosen, "qty": qty}
+        floors = [floor for item_qty, floor in chosen_rows if item_qty == qty and floor]
+        units[number] = {
+            "unit": number,
+            "type": chosen,
+            "qty": qty,
+            "floor": floors[0] if floors else "",
+        }
     grouped = _group_unit_types(list(units.values()))
     return {
         "units": list(units.values()),
         "types": grouped,
         "transcribedUnits": sum(unit["qty"] for unit in units.values()),
         "printedTotal": max(printed) if printed else None,
+        "floorTotals": floor_totals,
     }
 
 
@@ -587,23 +494,6 @@ def _group_unit_types(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(grouped.values())
 
 
-def _opening_count(plans: list[dict[str, Any]]) -> int:
-    counts: list[int] = []
-    for row in plans:
-        raw = row.get("shadeOpenings")
-        if raw is None:
-            raw = row.get("shades")
-        try:
-            counts.append(max(0, int(raw or 0)))
-        except (TypeError, ValueError):
-            continue
-    if not counts:
-        return 0
-    # Variants of one type disagree. Use the value that appears most often.
-    best = max(set(counts), key=counts.count)
-    return best
-
-
 def _units_from_floor_plans(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
     for row in rows:
@@ -627,8 +517,13 @@ _STREET = re.compile(
 )
 
 
-def _project_name(rows: list[dict[str, Any]]) -> str:
-    """The name the title block repeats. A street or a PROJECT label, not one job's name."""
+def project_identities(rows: list[dict[str, Any]]) -> list[str]:
+    """
+    One project name for this upload.
+
+    A project label and a street on the same set are one project. Two different
+    project labels, or two different streets when no label is printed, stay apart.
+    """
     labeled: dict[str, int] = {}
     streets: dict[str, int] = {}
     for row in rows:
@@ -643,11 +538,19 @@ def _project_name(rows: list[dict[str, Any]]) -> str:
         for match in _STREET.finditer(text):
             name = " ".join(match.group(0).split())
             streets[name.upper()] = streets.get(name.upper(), 0) + 1
-    if labeled:
-        return max(labeled, key=lambda name: (labeled[name], len(name)))
-    if streets:
-        return max(streets, key=lambda name: (streets[name], len(name)))
-    return ""
+    if len(labeled) > 1:
+        return list(labeled)
+    if len(labeled) == 1:
+        return list(labeled)
+    return list(streets)
+
+
+def _project_name(rows: list[dict[str, Any]]) -> str:
+    """The name the title block repeats. A street or a PROJECT label, not one job's name."""
+    names = project_identities(rows)
+    if not names:
+        return ""
+    return names[0]
 
 
 def _images_for_role(role: str, data: bytes) -> list[tuple[str, bytes]]:

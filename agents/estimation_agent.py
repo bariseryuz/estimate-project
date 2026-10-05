@@ -55,8 +55,10 @@ async def run_estimation_agent(
 
 
 def _unpriced_drawing_estimate(takeoff: dict) -> dict:
-    """A drawing set states how many openings there are. It does not state a price."""
-    total = takeoff.get("totalShadeCount")
+    """A drawing set states architectural openings. It does not state a shade quantity or a price."""
+    openings = takeoff.get("openingQuantity")
+    architectural = takeoff.get("dataSource") == "drawing_set" and takeoff.get("totalShadeCount") is None
+    total = openings if architectural else takeoff.get("totalShadeCount")
     summary = takeoff.get("summary") or ""
     lines = []
     for item in takeoff.get("takeoffItems") or []:
@@ -79,23 +81,28 @@ def _unpriced_drawing_estimate(takeoff: dict) -> dict:
     return {
         "estimates": lines,
         "shadeSummary": {
-            "totalShades": total,
+            "totalShades": None if architectural else total,
             "motorizedCount": 0,
             "byType": [],
             "totalSquareFeet": None,
         },
         "clientOffer": {
-            "headline": f"Window shade count — {total} shades",
-            "totalShades": total,
+            "headline": (
+                f"Architectural openings — {openings} verified. Shade quantity is not set."
+                if architectural
+                else f"Window shade count — {total} shades"
+            ),
+            "totalShades": None if architectural else total,
             "totalPrice": None,
             "pricePerShade": None,
             "offerNarrative": (
                 f"{summary} These drawings do not print a sell price. "
-                "Add a price sheet when you want this count priced."
+                "Opening quantity is not a shade quantity."
             ).strip(),
             "assumptions": [
-                "The count is the unit-matrix quantity times the window tags on each unit plan.",
-                "Lobby and amenity shades are not on the unit plans.",
+                "Verified rows are architectural width, height, and opening quantity.",
+                "The estimator sets deductions, mount, transom treatment, and shade splits before pricing.",
+                "Unresolved rows are withheld. Unresolved is not zero.",
             ],
             "validityNote": "The count is from the drawings. A price is not printed on these sheets.",
         },

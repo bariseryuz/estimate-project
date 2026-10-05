@@ -895,9 +895,17 @@ function handleProgress({ agent, status, message, data }) {
     updateDocRail();
     const logEl = $(`log-${agent}`);
     if (!logEl) return;
-    if (agent === 'visionAnalyst') logEl.textContent = `${data.pagesAnalyzed ?? 0} pages · ~${data.estimatedTotalShades ?? '?'} shades`;
+    if (agent === 'visionAnalyst') {
+      logEl.textContent = data.openingQuantity != null
+        ? `${data.pagesAnalyzed ?? 0} pages · ${data.openingQuantity} verified openings`
+        : `${data.pagesAnalyzed ?? 0} pages · ~${data.estimatedTotalShades ?? '?'} shades`;
+    }
     if (agent === 'contextParser') logEl.textContent = `${data.documentType ?? ''} · ${data.abbreviationCount ?? 0} abbrev.`;
-    if (agent === 'takeoffEngine') logEl.textContent = `${data.totalShades ?? '?'} shades`;
+    if (agent === 'takeoffEngine') {
+      logEl.textContent = data.openingQuantity != null && data.totalShades == null
+        ? `${data.openingQuantity} verified openings`
+        : `${data.totalShades ?? '?'} shades`;
+    }
     if (agent === 'estimationAgent') logEl.textContent = `Total: ${fmt(data.totalEstimate)}`;
     if (agent === 'validation') logEl.textContent = `${data.confidenceScore ?? '?'}/100 · ${data.recommendation ?? ''}`;
   }
@@ -931,12 +939,18 @@ function renderResults(data) {
   const detail = analysisDetail || {};
   const counts = detail.counts || {};
 
-  const shadeCount =
-    workbook?.authoritativeTotalShades ??
-    counts.windowMatrixTotal ??
-    counts.totalShadesAndBlinds ??
-    takeoff?.totalShadeCount ??
-    vision?.estimatedTotalShades;
+  const drawingSet = takeoff?.dataSource === 'drawing_set';
+  const shadeCount = drawingSet
+    ? (takeoff?.openingQuantity ?? '—')
+    : (
+      workbook?.authoritativeTotalShades ??
+      counts.windowMatrixTotal ??
+      counts.totalShadesAndBlinds ??
+      takeoff?.totalShadeCount ??
+      vision?.estimatedTotalShades
+    );
+  const shadesLabel = $('sumShadesLabel');
+  if (shadesLabel) shadesLabel.textContent = drawingSet ? 'Verified openings' : 'Window Shades';
 
   renderSimpleSummary(data);
   renderProjectSummary(data.projectSummary || detail.projectSummary);
@@ -1213,7 +1227,7 @@ function renderQuantitySchedule(qs) {
   const t = qs.totals || {};
   if (totalsEl) {
     const parts = [
-      `${t.unitQuantity ?? '—'} shades total`,
+      `${t.unitQuantity ?? '—'} ${t.countNoun || 'shades'} total`,
       t.grandTotal != null ? `${fmt(t.grandTotal, t.currency)} project total` : null,
       t.matchesMatrix === false ? 'Count differs from Matrix — please review' : null,
     ].filter(Boolean);

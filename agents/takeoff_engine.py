@@ -53,7 +53,7 @@ async def run_takeoff_engine(
     wb = workbook_analysis or context_parser_output.get("workbook") or {}
 
     drawing = (vision_result or {}).get("drawingTakeoff")
-    if drawing and drawing.get("takeoffItems"):
+    if drawing and (drawing.get("takeoffItems") or drawing.get("dataSource") == "drawing_set"):
         await progress("Building take-off from the unit matrix and unit plans…")
         for item in drawing.get("takeoffItems") or []:
             enrich_takeoff_item(item)

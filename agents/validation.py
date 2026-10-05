@@ -148,7 +148,9 @@ def _drawing_set_validation(takeoff: dict, estimation: dict) -> dict:
     read = takeoff.get("matrixUnitsRead")
     match = printed is not None and read == printed
     priced = estimation.get("totalEstimate") is not None
-    summary = takeoff.get("summary") or "Shade count taken from the unit matrix and unit plans."
+    exceptions = [item for item in (takeoff.get("exceptions") or []) if isinstance(item, dict)]
+    unresolved = takeoff.get("unresolvedQuantity") or 0
+    summary = takeoff.get("summary") or "Opening count taken from the schedules, unit plans, and unit matrix."
     issues = []
     if not match:
         issues.append(
@@ -159,19 +161,32 @@ def _drawing_set_validation(takeoff: dict, estimation: dict) -> dict:
                 "recommendation": "Check the unit-matrix image for the apartments that did not match.",
             }
         )
+    if exceptions or unresolved:
+        issues.append(
+            {
+                "severity": "Warning",
+                "category": "Openings",
+                "issue": (
+                    f"{len(exceptions)} exception(s). Unresolved opening quantity is {unresolved}. "
+                    "Unresolved is not treated as zero."
+                ),
+                "recommendation": "Resolve the exception report before releasing those rows.",
+            }
+        )
     if not priced:
         issues.append(
             {
                 "severity": "Info",
                 "category": "Price",
-                "issue": "These drawings do not print a sell price.",
-                "recommendation": "Add the price workbook when a bid is required.",
+                "issue": "These drawings do not print a sell price, and opening quantity is not a shade quantity.",
+                "recommendation": "The estimator sets deductions, mount, and shade splits before pricing.",
             }
         )
+    blocked = bool(exceptions or unresolved or not match)
     return {
-        "confidenceScore": 90 if match else 55,
-        "confidenceLevel": "High" if match else "Medium",
-        "readyToSendOffer": bool(match and priced),
+        "confidenceScore": 90 if match and not blocked else 55,
+        "confidenceLevel": "High" if match and not blocked else "Medium",
+        "readyToSendOffer": bool(match and priced and not exceptions and not unresolved),
         "validationIssues": issues,
         "crossChecks": [
             {
@@ -183,10 +198,10 @@ def _drawing_set_validation(takeoff: dict, estimation: dict) -> dict:
             }
         ],
         "strengths": [summary],
-        "limitations": ["Lobby and amenity shades are not on the unit plans."]
+        "limitations": ["Common-area openings are kept separate from the unit-matrix expansion."]
         + ([] if priced else ["No sell price is printed on these sheets."]),
         "overallAssessment": summary,
-        "recommendation": "Approved" if match else "Needs Review",
+        "recommendation": "Approved" if match and not exceptions and not unresolved else "Needs Review",
         "validationSummary": summary,
         "userFriendlySummary": summary,
     }

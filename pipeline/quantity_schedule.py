@@ -153,6 +153,7 @@ def build_quantity_schedule(
             "priceSource": estimation.get("priceSource"),
             "referenceGrandTotal": (workbook.get("referencePricing") or {}).get("grandTotal"),
             "pricedLineCount": sum(1 for l in lines if l.get("extendedPrice") is not None),
+            "countNoun": "architectural openings" if takeoff.get("dataSource") == "drawing_set" else "shades",
         },
         "primarySource": takeoff.get("primarySource") or context.get("windowScheduleLocation"),
         "sourcesUsed": takeoff.get("sourcesUsed") or "",

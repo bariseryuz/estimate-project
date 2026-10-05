@@ -49,7 +49,8 @@ def count_plan_openings(data: bytes) -> Optional[dict[str, Any]]:
         return None
     box = _plan_box(rooms, title, page.rect.width)
     window_rects, door_rects = _mark_rects(page)
-    tags = []
+    window_hits = []
+    door_hits = []
     for word in words:
         if not box.contains(fitz.Point(word["x"], word["y"])):
             continue
@@ -57,28 +58,43 @@ def count_plan_openings(data: bytes) -> Optional[dict[str, Any]]:
         if not _TAG.match(token):
             continue
         point = fitz.Point(word["ux"], word["uy"])
-        if any(rect.contains(point) for rect in door_rects):
-            continue
-        if not any(rect.contains(point) for rect in window_rects):
-            continue
         if _closer_to_elevation(word, words, rooms):
             continue
         room = min(rooms, key=lambda item: (item["x"] - word["x"]) ** 2 + (item["y"] - word["y"]) ** 2)
-        tags.append({"tag": token, "room": room["t"].upper(), "x": word["x"], "y": word["y"]})
-    tags = _dedupe(tags)
+        hit = {
+            "tag": token,
+            "room": room["t"].upper(),
+            "x": word["x"],
+            "y": word["y"],
+            "ux": word["ux"],
+            "uy": word["uy"],
+        }
+        if any(rect.contains(point) for rect in door_rects):
+            door_hits.append(hit)
+            continue
+        if not any(rect.contains(point) for rect in window_rects):
+            continue
+        window_hits.append(hit)
+    window_hits = _dedupe(window_hits)
+    door_hits = _dedupe(door_hits)
+    openings = _assemblies(window_hits, window_rects)
+    untagged = _untagged(window_rects, window_hits, box, words, rooms, page.rotation_matrix)
     doc.close()
-    windows = len(tags)
-    shades = sum(1 for tag in tags if not tag["room"].startswith("BATH"))
+    windows = len(openings) + len(untagged)
+    shades = sum(1 for opening in openings if not str(opening["room"]).startswith("BATH"))
     blind_word = any(_BLIND.search(word["t"]) for word in words)
     return {
         "windows": windows,
         "shades": shades,
         "blinds": 0 if not blind_word else None,
-        "tags": [{"tag": tag["tag"], "room": tag["room"]} for tag in tags],
+        "tags": [{"tag": opening["mark"], "room": opening["room"]} for opening in openings if opening.get("mark")],
+        "openings": openings,
+        "doors": [{"tag": hit["tag"], "room": hit["room"]} for hit in door_hits],
+        "untagged": untagged,
         "notes": (
-            "Window tags on the unit floor plan. "
-            "Square door tags are not included. "
-            "A bathroom window is a window and not a shade."
+            "Each window tag on the unit floor plan is one opening. "
+            "A reflected ceiling plan, elevation, or detail is not a second opening. "
+            "Square door tags are doors. A shade quantity is not assigned here."
         ),
     }
 
@@ -168,7 +184,7 @@ def _shape_kind(width: float, height: float, items: list) -> Optional[str]:
     kinds = "".join(item[0] for item in items)
     if kinds in {"l", "ll"} and max(width, height) <= 14:
         return None
-    if abs(width - height) <= 3.5 and 8 <= width <= 22 and kinds.startswith("q"):
+    if abs(width - height) <= 3.5 and 8 <= width <= 22 and (kinds.startswith("q") or kinds == "re"):
         return "door"
     aspect = max(width, height) / max(min(width, height), 0.1)
     if aspect >= 1.35 and max(width, height) <= 48:
@@ -188,10 +204,82 @@ def _closer_to_elevation(word: dict[str, Any], words: list[dict[str, Any]], room
     return False
 
 
+def _assemblies(hits: list[dict[str, Any]], window_rects: list[Any]) -> list[dict[str, Any]]:
+    """Tags inside one window outline are one opening. The outline is not counted again."""
+    import fitz
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for hit in hits:
+        point = fitz.Point(hit["ux"], hit["uy"])
+        containers = [rect for rect in window_rects if rect.contains(point)]
+        if not containers:
+            groups.setdefault(id(hit), [hit])
+            continue
+        rect = min(containers, key=lambda item: item.width * item.height)
+        groups.setdefault(id(rect), []).append(hit)
+    openings = []
+    for group in groups.values():
+        marks = []
+        for hit in group:
+            if hit["tag"] not in marks:
+                marks.append(hit["tag"])
+        primary = group[0]
+        openings.append(
+            {
+                "opening_class": "WINDOW",
+                "mark": primary["tag"] if len(marks) == 1 else "",
+                "components": marks,
+                "assembly": len(marks) > 1,
+                "room": primary["room"],
+                "bounding_box": [round(primary["x"], 1), round(primary["y"], 1)],
+            }
+        )
+    return openings
+
+
+def _untagged(window_rects, hits, box, words, rooms, matrix) -> list[dict[str, Any]]:
+    """An empty tag bubble is an opening with no mark. Other geometry is not a guess."""
+    import fitz
+
+    tagged = []
+    for rect in window_rects:
+        if any(rect.contains(fitz.Point(hit["ux"], hit["uy"])) for hit in hits):
+            tagged.append(rect)
+    if not tagged:
+        return []
+    found = []
+    for rect in window_rects:
+        if any(rect.contains(fitz.Point(hit["ux"], hit["uy"])) for hit in hits):
+            continue
+        if not any(abs(rect.width - known.width) <= 4 and abs(rect.height - known.height) <= 4 for known in tagged):
+            continue
+        center = fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2) * matrix
+        if not box.contains(center):
+            continue
+        room_distance = min((center.x - room["x"]) ** 2 + (center.y - room["y"]) ** 2 for room in rooms) ** 0.5
+        if room_distance > 250:
+            continue
+        word = {"x": center.x, "y": center.y}
+        if _closer_to_elevation(word, words, rooms):
+            continue
+        if any(abs(item["bounding_box"][0] - rect.x0) < 8 and abs(item["bounding_box"][1] - rect.y0) < 8 for item in found):
+            continue
+        found.append(
+            {
+                "opening_class": "WINDOW",
+                "bounding_box": [round(rect.x0, 1), round(rect.y0, 1), round(rect.x1, 1), round(rect.y1, 1)],
+            }
+        )
+    return found
+
+
 def _dedupe(tags: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for tag in tags:
-        if any(abs(tag["x"] - other["x"]) < 18 and abs(tag["y"] - other["y"]) < 18 for other in kept):
+        if any(
+            tag["tag"] == other["tag"] and abs(tag["x"] - other["x"]) < 18 and abs(tag["y"] - other["y"]) < 18
+            for other in kept
+        ):
             continue
         kept.append(tag)
     return kept

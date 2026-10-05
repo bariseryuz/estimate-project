@@ -240,6 +240,196 @@ def _cluster(words: list[dict[str, Any]], tolerance: float) -> list[list[dict[st
     return rows
 
 
+_MATERIAL_MARK = {
+    "AL",
+    "ALUM",
+    "BRONZE",
+    "FIXED",
+    "GL",
+    "GLASS",
+    "HM",
+    "IMPACT",
+    "MTL",
+    "PTD",
+    "SCW",
+    "WD",
+}
+
+
+def read_schedule_dictionary(data: bytes, opening_class: str = "WINDOW") -> list[dict[str, Any]]:
+    """
+    One record per schedule mark, in its own WINDOW, DOOR, or STOREFRONT namespace.
+
+    A blank width or height stays null. Two different sizes for one mark stay
+    side by side and neither one is chosen. A value is never copied down from
+    the row above. Elevation dimensions that are not in these columns are ignored.
+    """
+    default = _class_name(opening_class)
+    words = _words_from_pdf(data)
+    if not words:
+        return []
+    tables = _tables(words)
+    found: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for index, table in enumerate(tables):
+        limit = tables[index + 1]["y"] if index + 1 < len(tables) else table["y"] + 900
+        klass = _table_class(words, table["y"], default)
+        for row in _rows_between(words, table["y"], limit, table):
+            mark = _mark_beside_width(row, table)
+            if not mark:
+                continue
+            width = _dim_on_row(row, table["width_x"], table["height_x"])
+            height = _dim_on_row(row, table["height_x"], table["width_x"])
+            mark_word = min(row, key=lambda word: abs(word["x"] - (table["width_x"] - 40)))
+            found.setdefault((klass, mark), []).append(
+                {
+                    "width": width,
+                    "height": height,
+                    "restrictions": _restriction_text(row, mark),
+                    "glazed": _row_has(row, ("GLASS", "GLAZ", "SIDELITE", "LITE")),
+                    "opaque": _row_opaque(row),
+                    "bounding_box": [round(mark_word["x"], 1), round(mark_word["y"], 1)],
+                }
+            )
+    records = []
+    for (klass, mark), observations in found.items():
+        records.append(_collapse_mark(klass, mark, observations))
+    records.sort(key=lambda record: (record["opening_class"], record["mark_normalized"]))
+    return records
+
+
+def _class_name(value: str) -> str:
+    name = (value or "WINDOW").strip().upper()
+    if name not in {"WINDOW", "DOOR", "STOREFRONT"}:
+        return "WINDOW"
+    return name
+
+
+def _table_class(words: list[dict[str, Any]], table_y: float, default: str) -> str:
+    """The schedule title just above this header, not the sheet number."""
+    line_ys = [
+        word["y"]
+        for word in words
+        if table_y - 90 <= word["y"] < table_y - 4 and "SCHEDULE" in word["t"].upper()
+    ]
+    if not line_ys:
+        return default
+    title_y = max(line_ys)
+    title = " ".join(
+        word["t"].upper() for word in words if abs(word["y"] - title_y) < 10
+    )
+    has_window = "WINDOW" in title
+    has_door = "DOOR" in title
+    has_storefront = "STOREFRONT" in title
+    if has_door and not has_window:
+        return "DOOR"
+    if has_storefront and not has_window:
+        return "STOREFRONT"
+    if has_window and not has_storefront:
+        return "WINDOW"
+    return default
+
+
+def _mark_beside_width(row: list[dict[str, Any]], table: dict[str, Any]) -> str:
+    """The mark in the column beside WIDTH. A note under a far TYPE header is not a mark."""
+    found = []
+    for word in row:
+        gap = table["width_x"] - word["x"]
+        if gap < 8 or gap > 160:
+            continue
+        if not _is_schedule_mark(word["t"]):
+            continue
+        found.append((gap, word["t"]))
+    if not found:
+        return ""
+    found.sort()
+    return found[0][1].strip().upper()
+
+
+def _is_schedule_mark(token: str) -> bool:
+    text = token.strip().upper().strip(".,:;")
+    if text in _NOT_A_MARK or text in _MATERIAL_MARK:
+        return False
+    if not _is_mark(text, under_header=False):
+        return False
+    if text.isdigit():
+        return False
+    return True
+
+
+def _restriction_text(row: list[dict[str, Any]], mark: str) -> str:
+    kept = []
+    for word in row:
+        token = word["t"].strip()
+        if token.upper() == mark:
+            continue
+        if not re.search(r"FLOOR|LEVEL|GROUND|TYPICAL|TERRACE|UNITS?\b|\d(?:ST|ND|RD|TH)\b", token, re.I):
+            continue
+        kept.append(token)
+    return " ".join(kept)
+
+
+def _row_has(row: list[dict[str, Any]], needles: tuple[str, ...]) -> bool:
+    for word in row:
+        text = word["t"].upper()
+        if any(needle in text for needle in needles):
+            return True
+    return False
+
+
+def _row_opaque(row: list[dict[str, Any]]) -> bool:
+    if _row_has(row, ("GLASS", "GLAZ", "SIDELITE")):
+        return False
+    return _row_has(row, ("WOOD", "METAL", "MTL", "HOLLOW", "SCW"))
+
+
+def _collapse_mark(klass: str, mark: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
+    complete = [item for item in observations if item["width"] and item["height"]]
+    sizes = {(item["width"][1], item["height"][1]): item for item in complete}
+    restrictions = " ".join(dict.fromkeys(item["restrictions"] for item in observations if item["restrictions"]))
+    glazed = any(item["glazed"] for item in observations)
+    opaque_flags = [item["opaque"] for item in observations if item["width"] or item["height"] or item["opaque"]]
+    opaque = bool(opaque_flags) and all(opaque_flags) and not glazed
+    conflicts = [
+        {
+            "width_original": item["width"][0],
+            "height_original": item["height"][0],
+            "width_inches": item["width"][1],
+            "height_inches": item["height"][1],
+        }
+        for item in sizes.values()
+    ]
+    record = {
+        "opening_class": klass,
+        "mark_raw": mark,
+        "mark_normalized": mark,
+        "width_original": None,
+        "height_original": None,
+        "width_inches": None,
+        "height_inches": None,
+        "dimension_basis": None,
+        "restrictions": restrictions,
+        "glazed": glazed,
+        "opaque": opaque,
+        "conflicts": [],
+        "issue_codes": [],
+        "bounding_box": observations[0].get("bounding_box"),
+    }
+    if len(sizes) > 1:
+        record["conflicts"] = conflicts
+        record["issue_codes"] = ["DIMENSION_CONFLICT"]
+        return record
+    if len(sizes) == 1:
+        item = next(iter(sizes.values()))
+        record["width_original"] = item["width"][0]
+        record["height_original"] = item["height"][0]
+        record["width_inches"] = item["width"][1]
+        record["height_inches"] = item["height"][1]
+        record["dimension_basis"] = "schedule"
+        return record
+    record["issue_codes"] = ["BLANK_DIMENSION"]
+    return record
+
+
 def _words_from_pdf(data: bytes) -> list[dict[str, Any]]:
     try:
         import fitz

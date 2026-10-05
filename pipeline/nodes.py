@@ -152,6 +152,9 @@ async def vision_analyst_node(state: PipelineState) -> dict:
                 data={
                     "pagesAnalyzed": result.get("pagesAnalyzed"),
                     "estimatedTotalShades": result.get("estimatedTotalShades"),
+                    "openingQuantity": result.get("openingQuantity"),
+                    "provisionalQuantity": result.get("provisionalQuantity"),
+                    "unresolvedQuantity": result.get("unresolvedQuantity"),
                     "estimatedTotalWindows": result.get("estimatedTotalWindows"),
                     "shadesRequired": result.get("shadesRequired"),
                     "catalogueSummary": result.get("catalogueSummary"),
@@ -358,7 +361,8 @@ async def takeoff_engine_node(state: PipelineState) -> dict:
             "complete",
             "Take-off complete.",
             data={
-                "totalShades": result.get("totalShadeCount") or result.get("totalItemCount"),
+                "totalShades": result.get("totalShadeCount"),
+                "openingQuantity": result.get("openingQuantity"),
                 "countByType": result.get("countByType"),
                 "categories": result.get("categories"),
                 "summary": result.get("summary"),

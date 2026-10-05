@@ -111,9 +111,13 @@ def _match_status(
         read_units = drawing.get("matrixUnitsRead")
         printed_units = drawing.get("matrixUnitsPrinted")
         if drawing.get("dataSource") == "drawing_set" and printed_units and read_units == printed_units:
+            openings = drawing.get("openingQuantity")
+            provisional = drawing.get("provisionalQuantity")
+            unresolved = drawing.get("unresolvedQuantity")
             return "match", (
                 f"The unit matrix prints TOTAL UNITS {printed_units}, and the rows read add up to that. "
-                f"The shade count is {takeoff_total}."
+                f"Verified openings: {openings}. Provisional: {provisional}. Unresolved: {unresolved}. "
+                "Shade quantity is not set from the drawings."
             )
         if drawing.get("dataSource") == "drawing_set" and printed_units:
             return "mismatch", (

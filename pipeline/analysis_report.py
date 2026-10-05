@@ -27,17 +27,22 @@ def build_analysis_detail(
         ingest["visionPagesAnalyzed"] = vision["analyzedPageNumbers"]
     items = takeoff.get("takeoffItems") or []
 
-    shade_count = takeoff.get("countShades")
-    blind_count = takeoff.get("countBlinds")
-    if shade_count is None or blind_count is None:
-        shade_count, blind_count = _count_kinds(items)
+    if takeoff.get("dataSource") == "drawing_set":
+        shade_count = None
+        blind_count = takeoff.get("countBlinds") or 0
+        total_units = takeoff.get("openingQuantity")
+    else:
+        shade_count = takeoff.get("countShades")
+        blind_count = takeoff.get("countBlinds")
+        if shade_count is None or blind_count is None:
+            shade_count, blind_count = _count_kinds(items)
 
-    total_units = (
-        takeoff.get("totalShadeCount")
-        or takeoff.get("totalItemCount")
-        or (shade_count + blind_count if shade_count + blind_count else None)
-        or vision.get("estimatedTotalShades")
-    )
+        total_units = (
+            takeoff.get("totalShadeCount")
+            or takeoff.get("totalItemCount")
+            or (shade_count + blind_count if shade_count + blind_count else None)
+            or vision.get("estimatedTotalShades")
+        )
 
     primary_source = _primary_source(context, ingest, vision, takeoff)
     steps = _analysis_steps(source_meta, ingest, vision, context, takeoff, estimation, validation)

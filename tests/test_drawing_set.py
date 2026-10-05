@@ -22,6 +22,11 @@ class TestDrawingSet(unittest.TestCase):
         self.assertEqual(classify_sheet("A-0.04.1-UPDATED-UNIT-MATRIX.pdf", ""), "unit_matrix")
         self.assertEqual(classify_sheet("A-4.00-UNIT-A-1-a-Rev.Permit.pdf", ""), "unit_plan")
         self.assertEqual(classify_sheet("A-6.02-STOREFRONT-WINDOW-SCHEDULE.pdf", "WINDOW SCHEDULE"), "window_schedule")
+        self.assertEqual(classify_sheet("A-6.00-DOOR-SCHEDULE.pdf", "DOOR SCHEDULE"), "door_schedule")
+        self.assertEqual(
+            classify_sheet("A-6.03-STOREFRONT-SCHEDULE.pdf", "STOREFRONT SCHEDULE"),
+            "storefront_schedule",
+        )
         self.assertEqual(classify_sheet("A-1.01-GROUND-FLOOR-AND-SECOND-FLOOR.pdf", ""), "floor_plan")
         self.assertEqual(classify_sheet("A-1.22-PARTIAL-GROUND-FLOOR-RCP-1.pdf", ""), "other")
 
@@ -58,7 +63,7 @@ class TestDrawingSet(unittest.TestCase):
         )
         self.assertEqual(rejected["transcribedUnits"], 0)
 
-    def test_shade_count_is_units_times_openings_on_that_plan(self):
+    def test_opening_count_is_units_times_openings_on_that_plan(self):
         combined = combine_counts(
             [{"type": "A-1a", "count": 10}, {"type": "B-1", "count": 4}, {"type": "C-9", "count": 2}],
             [
@@ -67,13 +72,17 @@ class TestDrawingSet(unittest.TestCase):
                 {"file": "A-4.09-UNIT-B-1-Rev.GMP.pdf", "unitType": "B-1", "shadeOpenings": 4},
             ],
         )
-        self.assertEqual(combined["total"], 10 * 3 + 4 * 4)
+        self.assertEqual(combined["unresolvedQuantity"], 10 * 3 + 4 * 4)
+        self.assertEqual(combined["total"], 0)
+        self.assertIsNone(combined["shadeQuantity"])
         self.assertEqual(combined["unmatched"], ["C-9"])
-        b1 = next(line for line in combined["lines"] if line.get("unitType") == "B-1")
-        self.assertEqual(b1["quantity"], 16)
-        self.assertEqual(b1["apartmentCount"], 4)
-        self.assertNotEqual(b1["windowTag"], "B-1")
-        self.assertIn("UNIT-B-1-Rev", b1["sourceLocation"])
+        b1 = [row for row in combined["records"] if row.get("unitType") == "B-1"]
+        self.assertEqual(sum(row["quantity"] for row in b1), 16)
+        self.assertTrue(all(row["windowTag"] != "B-1" for row in b1))
+        self.assertTrue(all(row["windowTag"] != "shade" for row in b1))
+        self.assertIn("UNIT-B-1-Rev", b1[0]["sourceLocation"])
+        self.assertTrue(any(item["issue_code"] == "UNKNOWN_SUBTYPE" for item in combined["exceptions"]))
+        self.assertTrue(any(item["issue_code"] == "UNTAGGED_OPENING" for item in combined["exceptions"]))
 
     def test_apartment_count_is_not_used_as_the_shade_count(self):
         combined = combine_counts(
@@ -93,12 +102,15 @@ class TestDrawingSet(unittest.TestCase):
                 },
             ],
         )
-        self.assertEqual(combined["total"], 14)
-        self.assertEqual(len(combined["lines"]), 1)
-        line = combined["lines"][0]
+        self.assertEqual(combined["unresolvedQuantity"], 14)
+        self.assertEqual(combined["total"], 0)
+        self.assertIsNone(combined["shadeQuantity"])
+        self.assertEqual(len(combined["unresolvedLines"]), 1)
+        line = combined["unresolvedLines"][0]
         self.assertEqual(line["windowTag"], "U2")
         self.assertEqual(line["quantity"], 14)
         self.assertNotEqual(line["quantity"], 10)
+        self.assertTrue(any(item["issue_code"] == "MISSING_SCHEDULE" for item in combined["exceptions"]))
         none = combine_counts(
             [{"type": "A-1", "count": 10}],
             [{"unitType": "A-1", "shadeOpenings": 0, "file": "UNIT-A-1.pdf"}],
