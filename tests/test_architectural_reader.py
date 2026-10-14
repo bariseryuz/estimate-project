@@ -12,6 +12,7 @@ from domain.architectural_reader import (
     lock_drawing_set,
     reconcile_floor_totals,
     revision_from_name,
+    sheet_number_from_name,
 )
 from domain.drawing_set import combine_counts
 from domain.plan_openings import count_plan_openings
@@ -204,7 +205,12 @@ class TestArchitecturalReader(unittest.TestCase):
         self.assertEqual(len(locked["duplicates"]), 1)
         self.assertEqual(copy_suffix("A-6.02-WINDOW-SCHEDULE-Rev.Permit (3).pdf"), "3")
         self.assertEqual(revision_from_name("A-6.02-WINDOW-SCHEDULE-Rev.Permit (3).pdf"), "Permit")
+        self.assertEqual(revision_from_name("A-0.00-Cover-Rev.Permit.pdf"), "Permit")
+        self.assertEqual(revision_from_name("A-6.00-DOOR-SCHEDULE-Rev.ArchitecturalRev#2.pdf"), "ArchitecturalRev#2")
         self.assertNotEqual(revision_from_name("A-6.02-WINDOW-SCHEDULE-Rev.Permit (3).pdf"), "3")
+        self.assertEqual(sheet_number_from_name("A-0.10-MEDITERRANEAN-BONUS-Rev.Permit.pdf"), "A-0.10")
+        self.assertEqual(sheet_number_from_name("A-0.10.A-MEDITERRANEAN-BONUS-Rev.Permit.pdf"), "A-0.10.A")
+        self.assertEqual(sheet_number_from_name("A-4.16A-UNIT-C-2-Rev.Permit.pdf"), "A-4.16A")
         self.assertTrue(any(item["issue_code"] == "REVISION_CONFLICT" for item in locked["exceptions"]))
         self.assertNotIn("A-4.00-UNIT-A-1-a-Rev.Permit (4).pdf", locked["usable_files"])
         self.assertNotIn("A-4.00-UNIT-A-1-a-Rev.GMP.pdf", locked["usable_files"])
@@ -273,6 +279,9 @@ class TestArchitecturalReader(unittest.TestCase):
             self.assertIn("BLANK_DIMENSION", row["issue_codes"])
         self.assertEqual(marks[("STOREFRONT", "ST-1")]["opening_class"], "STOREFRONT")
         self.assertNotIn(("WINDOW", "ST-1"), marks)
+        for junk in ("OF", "ON", "TO", "ARE", "U.N.O.", "3RD"):
+            self.assertNotIn(("WINDOW", junk), marks)
+            self.assertNotIn(("STOREFRONT", junk), marks)
 
     def test_supplied_unit_plan_counts_bedroom_c_once(self):
         path = _ARCH / "A-4.00-UNIT-A-1-a-Rev.Permit.pdf"
@@ -281,6 +290,43 @@ class TestArchitecturalReader(unittest.TestCase):
         counted = count_plan_openings(path.read_bytes())
         bedrooms = [tag for tag in counted["tags"] if tag["tag"] == "C" and tag["room"] == "BEDROOM"]
         self.assertEqual(len(bedrooms), 1)
+        self.assertEqual(counted["untagged"], [])
+        self.assertEqual(counted["windows"], 2)
+
+    def test_every_bubble_keeps_its_room_and_sheet(self):
+        combined = combine_counts(
+            [{"type": "A-2", "count": 2}],
+            [
+                {
+                    "file": "A-4.04-UNIT-A-2-Rev.Permit.pdf",
+                    "unitType": "A-2",
+                    "tags": [
+                        {"tag": "U2", "room": "LIVING/DINING"},
+                        {"tag": "U2", "room": "BEDROOM"},
+                    ],
+                }
+            ],
+            schedules=[
+                {
+                    "opening_class": "WINDOW",
+                    "mark_normalized": "C",
+                    "mark_raw": "C",
+                    "width_original": "5'-0\"",
+                    "height_original": "8'-0\"",
+                    "source_file": "A-6.02-WINDOW-SCHEDULE.pdf",
+                }
+            ],
+        )
+        self.assertEqual(len(combined["countedBubbles"]), 2)
+        self.assertEqual(combined["countedBubbles"][0]["sheet"], "A-4.04")
+        self.assertEqual({row["room"] for row in combined["countedBubbles"]}, {"LIVING/DINING", "BEDROOM"})
+        self.assertTrue(all(row["mark"] == "U2" for row in combined["planMarksMissingFromSchedule"]))
+        self.assertEqual(combined["scheduleMarksMissingFromPlans"][0]["mark"], "C")
+        self.assertTrue(any(item["issue_code"] == "SCHEDULE_NOT_ON_PLAN" for item in combined["exceptions"]))
+        self.assertTrue(any(item["issue_code"] == "MISSING_SCHEDULE" for item in combined["exceptions"]))
+        line = combined["unresolvedLines"][0]
+        self.assertEqual(len(line["bubbles"]), 2)
+        self.assertEqual(line["bubbles"][0]["sheet"], "A-4.04")
 
 
 if __name__ == "__main__":

@@ -17,32 +17,49 @@ from utils.dimensions import parse_length_inches
 
 _NOT_A_MARK = {
     "ALL",
+    "AN",
     "AND",
+    "ARE",
+    "AS",
+    "AT",
+    "BE",
+    "BY",
+    "DO",
     "FOR",
     "HEIGHT",
+    "IF",
+    "IN",
+    "IS",
+    "IT",
     "NEW",
     "NO",
     "NOT",
     "NOTE",
     "NOTES",
+    "OF",
+    "ON",
+    "OR",
     "PER",
     "SEE",
+    "SO",
     "THE",
+    "TO",
     "TYPE",
+    "UP",
     "WIDTH",
     "YES",
 }
 _MARK_TEXT = re.compile(r"^[A-Z0-9][A-Z0-9./-]{0,11}$")
 
 
-def read_window_sizes(data: bytes) -> dict[str, dict[str, Any]]:
+def read_window_sizes(data: bytes, words: Optional[list[dict[str, Any]]] = None) -> dict[str, dict[str, Any]]:
     """
     Map each window mark to the width and height printed on its schedule row.
 
     The same mark with two different sizes is dropped. The sheet did not agree
     with itself, and a guessed size would be wrong on the next project too.
     """
-    words = _words_from_pdf(data)
+    words = _words_from_pdf(data) if words is None else words
     if not words:
         return {}
     tables = _tables(words)
@@ -256,7 +273,11 @@ _MATERIAL_MARK = {
 }
 
 
-def read_schedule_dictionary(data: bytes, opening_class: str = "WINDOW") -> list[dict[str, Any]]:
+def read_schedule_dictionary(
+    data: bytes,
+    opening_class: str = "WINDOW",
+    words: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
     """
     One record per schedule mark, in its own WINDOW, DOOR, or STOREFRONT namespace.
 
@@ -265,7 +286,7 @@ def read_schedule_dictionary(data: bytes, opening_class: str = "WINDOW") -> list
     the row above. Elevation dimensions that are not in these columns are ignored.
     """
     default = _class_name(opening_class)
-    words = _words_from_pdf(data)
+    words = _words_from_pdf(data) if words is None else words
     if not words:
         return []
     tables = _tables(words)
@@ -353,6 +374,14 @@ def _is_schedule_mark(token: str) -> bool:
         return False
     if text.isdigit():
         return False
+    if text.count(".") > 1 or re.fullmatch(r"[A-Z](?:\.[A-Z])+\.?", text):
+        return False
+    if re.fullmatch(r"\d+(?:ST|ND|RD|TH)", text):
+        return False
+    digits = sum(character.isdigit() for character in text)
+    letters = re.sub(r"[^A-Z]", "", text)
+    if digits >= 4 and digits > len(letters):
+        return False
     return True
 
 
@@ -428,6 +457,11 @@ def _collapse_mark(klass: str, mark: str, observations: list[dict[str, Any]]) ->
         return record
     record["issue_codes"] = ["BLANK_DIMENSION"]
     return record
+
+
+def schedule_words(data: bytes) -> list[dict[str, Any]]:
+    """Words on a schedule page, read once and shared by both schedule readers."""
+    return _words_from_pdf(data)
 
 
 def _words_from_pdf(data: bytes) -> list[dict[str, Any]]:

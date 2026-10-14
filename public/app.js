@@ -934,6 +934,104 @@ function setAgentStatus(agentId, status, message) {
   }
 }
 
+const bubbleDecisions = {};
+
+function renderBubbleReview(takeoff) {
+  const section = $('bubbleReview');
+  if (!section) return;
+  const bubbles = takeoff?.countedBubbles || [];
+  const missingSchedule = takeoff?.scheduleMarksMissingFromPlans || [];
+  for (const key of Object.keys(bubbleDecisions)) delete bubbleDecisions[key];
+  if (!bubbles.length && !missingSchedule.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const unresolvedMarks = [...new Set(
+    (takeoff?.planMarksMissingFromSchedule || bubbles)
+      .map((row) => row.mark)
+      .filter(Boolean)
+  )].sort();
+  const note = $('bubbleReviewNote');
+  if (note) {
+    const unsized = (takeoff?.planMarksMissingFromSchedule || []).length;
+    note.textContent = unsized
+      ? `${bubbles.length} bubbles on the unit plans. ${unsized} have no window-schedule size. Size or drop a mark once and it applies to every copy.`
+      : `${bubbles.length} bubbles on the unit plans. Schedule marks that never appear on a plan are listed below.`;
+  }
+  const actions = $('bubbleActions');
+  if (actions) {
+    actions.innerHTML = unresolvedMarks.map((mark) => `
+      <form class="bubble-action" data-mark="${escHtml(mark)}">
+        <strong>${escHtml(mark)}</strong>
+        <input name="width" placeholder="Width" aria-label="Width for ${escHtml(mark)}" />
+        <input name="height" placeholder="Height" aria-label="Height for ${escHtml(mark)}" />
+        <button type="submit" class="btn btn-secondary btn-sm">Size every ${escHtml(mark)}</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-drop="${escHtml(mark)}">Drop every ${escHtml(mark)}</button>
+      </form>
+    `).join('');
+    actions.querySelectorAll('form').forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const mark = form.dataset.mark;
+        bubbleDecisions[mark] = {
+          action: 'sized',
+          width: form.width.value.trim(),
+          height: form.height.value.trim(),
+        };
+        paintBubbles(bubbles);
+      });
+    });
+    actions.querySelectorAll('[data-drop]').forEach((button) => {
+      button.addEventListener('click', () => {
+        bubbleDecisions[button.dataset.drop] = { action: 'dropped' };
+        paintBubbles(bubbles);
+      });
+    });
+  }
+  const previews = $('planPreviews');
+  if (previews) {
+    previews.innerHTML = (takeoff?.planPreviews || []).map((plan) => `
+      <figure class="plan-preview">
+        <figcaption>${escHtml(plan.file)}</figcaption>
+        <img alt="Counted bubbles on ${escHtml(plan.file)}" src="data:image/jpeg;base64,${plan.imageBase64}" />
+      </figure>
+    `).join('');
+  }
+  paintBubbles(bubbles);
+  const scheduleBody = $('scheduleOnlyTable')?.querySelector('tbody');
+  if (scheduleBody) {
+    scheduleBody.innerHTML = missingSchedule.map((row) => `
+      <tr>
+        <td><code>${escHtml(row.mark)}</code></td>
+        <td>${escHtml(row.openingClass)}</td>
+        <td>${escHtml(row.width || '—')} × ${escHtml(row.height || '—')}</td>
+        <td>${escHtml(row.sheet || 'window schedule')}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="4">Every schedule mark appears on a unit plan.</td></tr>';
+  }
+}
+
+function paintBubbles(bubbles) {
+  const body = $('bubbleTable')?.querySelector('tbody');
+  if (!body) return;
+  body.innerHTML = bubbles.map((row) => {
+    const decision = bubbleDecisions[row.mark] || {};
+    const label = decision.action === 'dropped'
+      ? 'Dropped'
+      : decision.action === 'sized'
+        ? `Sized ${decision.width || '—'} × ${decision.height || '—'}`
+        : 'Needs a size or a drop';
+    const klass = decision.action === 'dropped' ? 'bubble-dropped' : decision.action === 'sized' ? 'bubble-sized' : '';
+    return `<tr class="${klass}">
+      <td data-label="Mark"><code>${escHtml(row.mark || '—')}</code></td>
+      <td data-label="Room">${escHtml(row.room || '—')}</td>
+      <td data-label="Sheet">${escHtml(row.sheet || row.file || '—')}</td>
+      <td data-label="Decision">${escHtml(label)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="4">No bubbles were counted on a unit plan.</td></tr>';
+}
+
 function renderResults(data) {
   const { analysisDetail, vision, context, takeoff, estimation, validation, workbook } = data;
   const detail = analysisDetail || {};
@@ -953,6 +1051,7 @@ function renderResults(data) {
   if (shadesLabel) shadesLabel.textContent = drawingSet ? 'Verified openings' : 'Window Shades';
 
   renderSimpleSummary(data);
+  renderBubbleReview(takeoff);
   renderProjectSummary(data.projectSummary || detail.projectSummary);
   renderEstimationAudit(data.estimationAudit || detail.estimationAudit);
   renderClientOffer(data.clientOfferPackage);

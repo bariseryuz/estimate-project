@@ -36,6 +36,21 @@ class TestPlanOpenings(unittest.TestCase):
         self.assertEqual(rooms["M"], "BATHROOM")
         self.assertNotIn("8A", rooms)
 
+    def test_a_loose_line_is_not_an_empty_window(self):
+        doc = fitz.open()
+        page = doc.new_page(width=900, height=640)
+        page.insert_text(fitz.Point(80, 560), "UNIT TYPE A-1 FLOOR PLAN")
+        page.insert_text(fitz.Point(120, 180), "BEDROOM")
+        page.draw_oval(fitz.Rect(150, 240, 172, 276))
+        page.insert_text(fitz.Point(154, 262), "C")
+        page.draw_oval(fitz.Rect(200, 300, 222, 336))
+        page.draw_line(fitz.Point(160, 320), fitz.Point(182, 356))
+        data = doc.tobytes()
+        doc.close()
+        counted = count_plan_openings(data)
+        self.assertEqual(len(counted["untagged"]), 1)
+        self.assertEqual(counted["windows"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,11 +26,12 @@ ISSUE_CODES = (
     "SCOPE_UNCONFIRMED",
     "REVISION_CONFLICT",
     "PROJECT_SEPARATION",
+    "SCHEDULE_NOT_ON_PLAN",
 )
 
-_SHEET_NUMBER = re.compile(r"(A-\d+(?:\.\d+)*[A-Z]?)", re.IGNORECASE)
+_SHEET_NUMBER = re.compile(r"(A-\d+(?:\.\d+)*[A-Z]?(?:\.[A-Z])?)", re.IGNORECASE)
 _COPY_SUFFIX = re.compile(r"\((\d+)\)\s*(?:\.pdf)?$", re.IGNORECASE)
-_REVISION = re.compile(r"Rev\.([A-Za-z0-9#][A-Za-z0-9#.\-]*)", re.IGNORECASE)
+_REVISION = re.compile(r"Rev\.([A-Za-z0-9#][A-Za-z0-9#\-]*)", re.IGNORECASE)
 _SPECIFIC_UNIT = re.compile(r"\bUNIT\s+((?:LW-)?\d{3,4})\b", re.IGNORECASE)
 _HIGH_MULTIPLIER = 20
 
@@ -226,6 +227,7 @@ def expand_openings(
     project_id: str = "",
     drawing_set_id: str = "",
     project_names: Optional[list[str]] = None,
+    hold_multiplication: bool = False,
 ) -> dict[str, Any]:
     """
     extended quantity = openings on the plan x matrix units of that exact subtype.
@@ -247,6 +249,7 @@ def expand_openings(
 
     dictionary = schedule_index(schedules or [])
     dictionary.update(index_from_sizes(sizes))
+    bubbles = bubbles_on_plans(plan_rows)
     units = [row for row in (matrix_units or []) if int(row.get("qty") or 0) > 0]
     exceptions: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
@@ -254,7 +257,7 @@ def expand_openings(
     aliases: list[dict[str, str]] = []
     used_plan_keys: set[str] = set()
 
-    for entry in matrix_types:
+    for entry in [] if hold_multiplication else matrix_types:
         code = str(entry.get("type") or "").strip()
         try:
             stated = int(entry.get("count") or 0)
@@ -348,24 +351,107 @@ def expand_openings(
             exceptions=exceptions,
         )
 
-    for plan in plan_rows:
-        label = str(plan.get("unitType") or "") or _type_from_filename(str(plan.get("file") or ""))
-        plan_key = formatting_key(label)
-        if plan_key and plan_key not in {formatting_key(str(entry.get("type") or "")) for entry in matrix_types}:
-            if plan_key not in used_plan_keys:
-                exceptions.append(
-                    exception_record(
-                        project_id=project_id,
-                        unit_or_mark=label,
-                        issue_code="UNKNOWN_SUBTYPE",
-                        source_location=str(plan.get("file") or ""),
-                        quantity_affected=None,
-                        decision_needed="This plan subtype is not on the unit matrix.",
+    if not hold_multiplication:
+        for plan in plan_rows:
+            label = str(plan.get("unitType") or "") or _type_from_filename(str(plan.get("file") or ""))
+            plan_key = formatting_key(label)
+            if plan_key and plan_key not in {formatting_key(str(entry.get("type") or "")) for entry in matrix_types}:
+                if plan_key not in used_plan_keys:
+                    exceptions.append(
+                        exception_record(
+                            project_id=project_id,
+                            unit_or_mark=label,
+                            issue_code="UNKNOWN_SUBTYPE",
+                            source_location=str(plan.get("file") or ""),
+                            quantity_affected=None,
+                            decision_needed="This plan subtype is not on the unit matrix.",
+                        )
                     )
-                )
-                used_plan_keys.add(plan_key)
+                    used_plan_keys.add(plan_key)
 
-    return _package(records, excluded, exceptions, aliases, project_id)
+    plan_missing, schedule_missing = _reconcile_marks(bubbles, dictionary, project_id, exceptions)
+    return _package(
+        records,
+        excluded,
+        exceptions,
+        aliases,
+        project_id,
+        bubbles=bubbles,
+        plan_missing=plan_missing,
+        schedule_missing=schedule_missing,
+    )
+
+
+def bubbles_on_plans(plan_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every window tag drawn on a unit plan, with the room and sheet it sits on."""
+    bubbles = []
+    for plan in plan_rows:
+        file_name = str(plan.get("file") or "")
+        sheet = _sheet_label(file_name)
+        for opening in _window_openings(plan):
+            mark = str(opening.get("mark") or "").strip().upper()
+            if opening.get("assembly") and opening.get("components"):
+                mark = "+".join(str(part).upper() for part in opening["components"])
+            bubbles.append(
+                {
+                    "mark": mark,
+                    "room": str(opening.get("room") or ""),
+                    "sheet": sheet,
+                    "file": file_name,
+                    "bounding_box": opening.get("bounding_box"),
+                }
+            )
+    return bubbles
+
+
+def _sheet_label(name: str) -> str:
+    match = _SHEET_NUMBER.search(name or "")
+    return match.group(1).upper() if match else name
+
+
+def _on_schedule(mark: str, dictionary: dict[tuple[str, str], dict[str, Any]]) -> bool:
+    if not mark:
+        return False
+    if mark.startswith("ST-"):
+        return ("STOREFRONT", mark) in dictionary or ("WINDOW", mark) in dictionary
+    return ("WINDOW", mark) in dictionary or ("STOREFRONT", mark) in dictionary
+
+
+def _reconcile_marks(
+    bubbles: list[dict[str, Any]],
+    dictionary: dict[tuple[str, str], dict[str, Any]],
+    project_id: str,
+    exceptions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Plan marks missing from the schedule, and schedule marks missing from every plan."""
+    plan_marks = {str(bubble.get("mark") or "") for bubble in bubbles if bubble.get("mark")}
+    plan_missing = [bubble for bubble in bubbles if bubble.get("mark") and not _on_schedule(str(bubble["mark"]), dictionary)]
+    schedule_missing = []
+    for (klass, mark), row in dictionary.items():
+        if klass not in {"WINDOW", "STOREFRONT"} or mark in plan_marks:
+            continue
+        schedule_missing.append(
+            {
+                "mark": mark,
+                "openingClass": klass,
+                "sheet": row.get("source_file") or "",
+                "width": row.get("width_original") or "",
+                "height": row.get("height_original") or "",
+            }
+        )
+        exceptions.append(
+            exception_record(
+                project_id=project_id,
+                unit_or_mark=mark,
+                issue_code="SCHEDULE_NOT_ON_PLAN",
+                source_location=str(row.get("source_file") or "window schedule"),
+                quantity_affected=None,
+                decision_needed=(
+                    f"{klass} schedule mark {mark} is not drawn on a unit plan. It was not counted."
+                ),
+            )
+        )
+    return plan_missing, schedule_missing
 
 
 def reconcile_floor_totals(
@@ -524,6 +610,16 @@ def _consume_plan(
     seen_physical: set[tuple[str, str, str]] = set()
     for (klass, mark, room), group in grouped.items():
         physical_key = (source, mark, room, str(group[0].get("bounding_box")))
+        bubbles = [
+            {
+                "mark": mark,
+                "room": str(item.get("room") or room),
+                "sheet": _sheet_label(source),
+                "file": source,
+                "bounding_box": item.get("bounding_box"),
+            }
+            for item in group
+        ]
         if physical_key in seen_physical:
             exceptions.append(
                 exception_record(
@@ -567,6 +663,7 @@ def _consume_plan(
                     plan=plan,
                     units=unit_numbers,
                     coverage="unresolved",
+                    bubbles=bubbles,
                 )
             )
             continue
@@ -652,6 +749,7 @@ def _consume_plan(
             plan=plan,
             units=unit_numbers,
             coverage=coverage,
+            bubbles=bubbles,
         )
         if status == "excluded":
             built["exclusion_reason"] = "Opaque door. Glazing is not shown for this type."
@@ -745,6 +843,7 @@ def _record(
     plan: dict[str, Any],
     units: list[str],
     coverage: str,
+    bubbles: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     schedule = schedule or {}
     extended = per_unit * applicable
@@ -774,7 +873,8 @@ def _record(
         "shade_quantity": None,
         "plan_sheet": source,
         "plan_view": "floor plan",
-        "plan_bounding_box": None,
+        "plan_bounding_box": (bubbles or [{}])[0].get("bounding_box"),
+        "bubbles": bubbles or [],
         "schedule_sheet": schedule.get("source_file") or "",
         "schedule_bounding_box": schedule.get("bounding_box"),
         "matrix_units": units,
@@ -817,6 +917,9 @@ def _package(
     exceptions: list[dict[str, Any]],
     aliases: list[dict[str, str]],
     project_id: str,
+    bubbles: Optional[list[dict[str, Any]]] = None,
+    plan_missing: Optional[list[dict[str, Any]]] = None,
+    schedule_missing: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     def summing(status: str) -> int:
         return sum(int(row.get("extended_quantity") or 0) for row in records if row.get("review_status") == status)
@@ -844,6 +947,9 @@ def _package(
         "unresolvedQuantity": unresolved,
         "shadeQuantity": None,
         "unmatched": unmatched,
+        "countedBubbles": bubbles or [],
+        "planMarksMissingFromSchedule": plan_missing or [],
+        "scheduleMarksMissingFromPlans": schedule_missing or [],
         "project_id": project_id,
         "byStatus": {
             "verified": verified,
@@ -871,10 +977,12 @@ def _aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             grouped[key]["extended_quantity"] = 0
             grouped[key]["_parts"] = []
             grouped[key]["_types"] = []
+            grouped[key]["bubbles"] = []
             order.append(key)
         bucket = grouped[key]
         bucket["quantity"] += int(row.get("quantity") or 0)
         bucket["extended_quantity"] += int(row.get("extended_quantity") or 0)
+        bucket["bubbles"].extend(row.get("bubbles") or [])
         part = row.get("calculationBasis") or ""
         if part:
             bucket["_parts"].append(part)

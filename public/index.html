@@ -375,6 +375,43 @@
         <p class="offer-validity" id="offerHeroValidity"></p>
       </section>
 
+      <!-- Counted bubbles: every mark on the unit plan, with room and sheet -->
+      <section class="bubble-review" id="bubbleReview" hidden>
+        <div class="detail-box-header">
+          <h3 class="detail-box-title">Counted bubbles</h3>
+          <p class="detail-box-sub" id="bubbleReviewNote">Every window mark drawn on a unit plan.</p>
+        </div>
+        <div class="bubble-actions" id="bubbleActions"></div>
+        <div class="plan-previews" id="planPreviews"></div>
+        <div class="table-scroll">
+          <table class="data-table stacking-table" id="bubbleTable">
+            <thead>
+              <tr>
+                <th>Mark</th>
+                <th>Room</th>
+                <th>Sheet</th>
+                <th>Decision</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h4 class="audit-section-title">Schedule marks not on a plan</h4>
+        <div class="table-scroll">
+          <table class="data-table stacking-table" id="scheduleOnlyTable">
+            <thead>
+              <tr>
+                <th>Mark</th>
+                <th>Class</th>
+                <th>Schedule size</th>
+                <th>Sheet</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Quantity schedule (contractor deliverable) -->
       <section class="quantity-schedule-box" id="quantityScheduleBox">
         <div class="detail-box-header">

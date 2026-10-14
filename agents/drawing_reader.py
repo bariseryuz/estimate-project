@@ -13,11 +13,16 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from clients.llm import complete_json
-from domain.drawing_set import apply_printed_unit_types, combine_counts, merge_unit_rows
+from domain.drawing_set import (
+    accept_matrix_table,
+    apply_printed_unit_types,
+    combine_counts,
+    merge_unit_rows,
+)
 
 ProgressCallback = Callable[[str], Awaitable[None]]
 
-_TILE_PROMPT = """This image is one crop of a unit-matrix sheet.
+_TILE_PROMPT = """This image is one upright table from a unit-matrix sheet. It may contain several floors. A floor header such as GROUND FLOOR or 2ND FLOOR names the floor for the rows under it. It is not a unit.
 The columns include UNIT #, UNIT TYPE, and often a floor and # OF UNITS.
 Copy a row only when UNIT # is an apartment number such as 201, 415, or LW-103, and UNIT TYPE is a plan code such as A-2, B-1A, or A-1A.
 DESCRIPTION (1BR/1BATH, 2BR+2BATH, 3BR+2BATH) is not the type. Do not use it as the type.
@@ -66,6 +71,7 @@ async def read_drawing_set(
         if sheet.get("role") == "floor_plan_types":
             printed_types = sheet.get("types") or {}
     merged = apply_printed_unit_types(merged, printed_types)
+    gate = accept_matrix_table(merged)
     plan_rows = [_plan_from_openings(sheet) for sheet in measured]
     if unread:
         plan_rows.extend(await _read_plans(unread, progress))
@@ -92,15 +98,16 @@ async def read_drawing_set(
             project_names = list(sheet.get("projectNames") or [])
             inventory_exceptions = list(sheet.get("readerExceptions") or [])
     combined = combine_counts(
-        merged["types"],
+        gate["types"] if gate["ready"] else [],
         plan_rows,
         schedules=schedules,
-        matrix_units=merged.get("units"),
+        matrix_units=gate["units"] if gate["ready"] else [],
         project_id=project_id,
         drawing_set_id=drawing_set_id,
         project_names=project_names,
+        hold_multiplication=not gate["ready"],
     )
-    combined["exceptions"] = inventory_exceptions + list(combined.get("exceptions") or [])
+    combined["exceptions"] = inventory_exceptions + list(gate.get("exceptions") or []) + list(combined.get("exceptions") or [])
     combined["exceptions"].extend(
         reconcile_floor_totals(
             merged.get("units") or [],
@@ -113,18 +120,30 @@ async def read_drawing_set(
 
     window_total = 0
     blind_total = 0
-    for entry in merged["types"]:
-        plan = _chosen_plan(str(entry.get("type") or ""), plan_rows)
-        if not plan:
-            continue
-        try:
-            count = int(entry.get("count") or 0)
-            window_total += count * int(plan.get("windows") or 0)
-            blind_total += count * int(plan.get("blinds") or 0)
-        except (TypeError, ValueError):
-            continue
+    if gate["ready"]:
+        for entry in gate["types"]:
+            plan = _chosen_plan(str(entry.get("type") or ""), plan_rows)
+            if not plan:
+                continue
+            try:
+                count = int(entry.get("count") or 0)
+                window_total += count * int(plan.get("windows") or 0)
+                blind_total += count * int(plan.get("blinds") or 0)
+            except (TypeError, ValueError):
+                continue
 
     notes = []
+    unread = [row for row in matrix_rows if row.get("error") or not (row.get("units") or row.get("printedTotals") or row.get("floorTotals"))]
+    if matrix and unread:
+        notes.append(
+            f"{len(unread)} of {len(matrix)} unit-matrix crops were not transcribed. "
+            "Those rows were not invented."
+        )
+    if not gate["ready"]:
+        notes.append(
+            "The unit matrix was not multiplied. A floor subtotal is used only when that floor's "
+            "rows add up to it, and a smaller printed total is not the building total."
+        )
     printed = merged.get("printedTotal")
     transcribed = merged.get("transcribedUnits") or 0
     if printed is not None and transcribed != printed:
@@ -209,6 +228,15 @@ async def read_drawing_set(
         "totalItemCount": len(lines),
         "matrixUnitsRead": transcribed,
         "matrixUnitsPrinted": printed,
+        "matrixReady": gate["ready"],
+        "countedBubbles": combined.get("countedBubbles") or [],
+        "planMarksMissingFromSchedule": combined.get("planMarksMissingFromSchedule") or [],
+        "scheduleMarksMissingFromPlans": combined.get("scheduleMarksMissingFromPlans") or [],
+        "planPreviews": [
+            {"file": row.get("file") or "", "imageBase64": row.get("preview")}
+            for row in plan_rows
+            if row.get("preview")
+        ],
     }
     return {
         "pagesAnalyzed": len({sheet["file"] for sheet in matrix + plans}),
@@ -264,6 +292,7 @@ def _plan_from_openings(sheet: dict[str, Any]) -> dict[str, Any]:
         "openings": physical,
         "doors": openings.get("doors") or [],
         "notes": openings.get("notes") or "",
+        "preview": openings.get("preview") or "",
     }
 
 
@@ -298,11 +327,11 @@ async def _read_tiles(sheets: list[dict[str, Any]], progress: ProgressCallback) 
                         _image_block(sheet),
                     ],
                     temperature=0.0,
-                    max_tokens=4096,
+                    max_tokens=8192,
                 )
-            except Exception:
-                return {}
-            return result if isinstance(result, dict) else {}
+            except Exception as exc:
+                return {"error": str(exc)[:240]}
+            return result if isinstance(result, dict) else {"error": "The matrix crop did not return a table."}
 
     done = 0
     tasks = [asyncio.create_task(one(sheet)) for sheet in sheets]

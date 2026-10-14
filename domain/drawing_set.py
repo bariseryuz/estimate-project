@@ -115,7 +115,7 @@ def prepare_drawing_set(
                     "imageBase64": base64.b64encode(jpeg).decode("ascii"),
                 }
             )
-    from domain.window_sizes import read_schedule_dictionary, read_window_sizes
+    from domain.window_sizes import read_schedule_dictionary, read_window_sizes, schedule_words
 
     schedule_roles = {
         "window_schedule": "WINDOW",
@@ -125,8 +125,9 @@ def prepare_drawing_set(
     for row in classified:
         if row["role"] not in schedule_roles:
             continue
-        sizes = read_window_sizes(row["data"]) if row["role"] == "window_schedule" else None
-        dictionary = read_schedule_dictionary(row["data"], schedule_roles[row["role"]])
+        words = schedule_words(row["data"])
+        sizes = read_window_sizes(row["data"], words) if row["role"] == "window_schedule" else None
+        dictionary = read_schedule_dictionary(row["data"], schedule_roles[row["role"]], words)
         for record in dictionary:
             record["source_file"] = row["file"]
             record["source_file_hash"] = next(
@@ -304,6 +305,7 @@ def combine_counts(
     project_id: str = "",
     drawing_set_id: str = "",
     project_names: Optional[list[str]] = None,
+    hold_multiplication: bool = False,
 ) -> dict[str, Any]:
     """
     Multiply plan openings by the matrix count of that exact subtype.
@@ -322,6 +324,7 @@ def combine_counts(
         project_id=project_id,
         drawing_set_id=drawing_set_id,
         project_names=project_names,
+        hold_multiplication=hold_multiplication,
     )
 
 
@@ -356,8 +359,8 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     """
     One unit number is one apartment, even when overlapping tiles both show it.
 
-    printedTotal is the largest TOTAL UNITS figure on the sheet, which is the
-    grand total rather than a single floor's subtotal.
+    printedTotal is a TOTAL UNITS figure at least as large as the apartments
+    already read. A smaller figure is one floor's subtotal, not the building.
     """
     readings: dict[str, list[tuple[str, int, str]]] = {}
     printed: list[int] = []
@@ -407,13 +410,157 @@ def merge_unit_rows(tile_payloads: list[dict[str, Any]]) -> dict[str, Any]:
             "qty": qty,
             "floor": floors[0] if floors else "",
         }
+    transcribed = sum(unit["qty"] for unit in units.values())
+    # A floor's TOTAL UNITS is smaller than the apartments already read.
+    # Only a figure at least that large can be the building total.
+    building = [value for value in printed if value >= transcribed]
+    rejected = [value for value in printed if value < transcribed]
     grouped = _group_unit_types(list(units.values()))
     return {
         "units": list(units.values()),
         "types": grouped,
-        "transcribedUnits": sum(unit["qty"] for unit in units.values()),
-        "printedTotal": max(printed) if printed else None,
+        "transcribedUnits": transcribed,
+        "printedTotal": max(building) if building else None,
+        "rejectedPrintedTotals": rejected,
         "floorTotals": floor_totals,
+    }
+
+
+def _floor_key(value: str) -> str:
+    """Ground, 2ND FLOOR, and 2 are the same floor label."""
+    text = re.sub(r"\bfloor\b", "", (value or "").lower())
+    text = re.sub(r"[^a-z0-9]", "", text)
+    names = {
+        "ground": "1",
+        "first": "1",
+        "second": "2",
+        "third": "3",
+        "fourth": "4",
+        "fifth": "5",
+        "sixth": "6",
+        "seventh": "7",
+        "eighth": "8",
+        "ninth": "9",
+    }
+    if text in names:
+        return names[text]
+    return re.sub(r"(st|nd|rd|th)$", "", text)
+
+
+def accept_matrix_table(merged: dict[str, Any]) -> dict[str, Any]:
+    """
+    A floor subtotal is accepted only when that floor's rows add up to it.
+
+    Multiplication waits for that check. A printed figure smaller than the
+    unit rows is a floor subtotal, not the building total, and those rows
+    are not multiplied until the floors reconcile.
+    """
+    from domain.architectural_reader import exception_record
+
+    units = [dict(unit) for unit in merged.get("units") or []]
+    transcribed = sum(int(unit.get("qty") or 0) for unit in units)
+    printed_total = merged.get("printedTotal")
+    rejected = [int(value) for value in merged.get("rejectedPrintedTotals") or []]
+    floor_rows = []
+    for row in merged.get("floorTotals") or []:
+        floor = _floor_key(str(row.get("floor") or ""))
+        try:
+            total = int(row.get("total"))
+        except (TypeError, ValueError):
+            continue
+        if floor and total >= 0:
+            floor_rows.append({"floor": floor, "total": total, "label": str(row.get("floor"))})
+
+    exceptions: list[dict[str, Any]] = []
+    accepted: list[dict[str, Any]] = []
+    ready = False
+
+    def mismatch(mark: str, printed: Optional[int], actual: Optional[int], needed: str) -> None:
+        exceptions.append(
+            exception_record(
+                project_id="",
+                unit_or_mark=mark,
+                issue_code="MATRIX_MISMATCH",
+                source_location="unit matrix",
+                quantity_affected=actual,
+                decision_needed=needed,
+            )
+        )
+
+    if floor_rows:
+        by_floor: dict[str, list[dict[str, Any]]] = {}
+        unlabeled = 0
+        for unit in units:
+            floor = _floor_key(str(unit.get("floor") or ""))
+            if not floor:
+                unlabeled += int(unit.get("qty") or 0)
+                continue
+            by_floor.setdefault(floor, []).append(unit)
+        failed = False
+        seen: set[str] = set()
+        matched: list[dict[str, Any]] = []
+        for row in floor_rows:
+            actual = sum(int(unit.get("qty") or 0) for unit in by_floor.get(row["floor"], []))
+            if actual == row["total"] and row["floor"] not in seen:
+                matched.extend(by_floor[row["floor"]])
+                seen.add(row["floor"])
+            else:
+                failed = True
+                mismatch(
+                    row["label"],
+                    row["total"],
+                    actual,
+                    (
+                        f"The printed subtotal for {row['label']} is {row['total']}. "
+                        f"The unit rows on that floor add to {actual}. "
+                        "That subtotal was not accepted, and nothing was multiplied."
+                    ),
+                )
+        extra = [floor for floor in by_floor if floor not in seen]
+        if extra or unlabeled:
+            failed = True
+            mismatch(
+                "floor rows",
+                None,
+                unlabeled + sum(int(unit.get("qty") or 0) for floor in extra for unit in by_floor[floor]),
+                "Some unit rows have no accepted floor subtotal. They were not multiplied.",
+            )
+        floor_sum = sum(row["total"] for row in floor_rows)
+        if not failed and printed_total is not None and printed_total != floor_sum:
+            failed = True
+            mismatch(
+                "TOTAL UNITS",
+                printed_total,
+                floor_sum,
+                (
+                    f"The sheet prints TOTAL UNITS {printed_total}. "
+                    f"The accepted floor subtotals add to {floor_sum}."
+                ),
+            )
+        if not failed and matched:
+            accepted = matched
+            ready = True
+    elif rejected or (printed_total is not None and printed_total != transcribed):
+        shown = rejected[0] if rejected else printed_total
+        mismatch(
+            "TOTAL UNITS",
+            shown,
+            transcribed,
+            (
+                f"A printed figure of {shown} does not equal the {transcribed} unit rows. "
+                "It was not used as the building total, and the rows were not multiplied."
+            ),
+        )
+    elif units:
+        accepted = units
+        ready = True
+
+    return {
+        "ready": ready,
+        "units": accepted if ready else [],
+        "types": _group_unit_types(accepted) if ready else [],
+        "exceptions": exceptions,
+        "transcribedUnits": transcribed,
     }
 
 
@@ -510,39 +657,90 @@ def _units_from_floor_plans(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 _PROJECT_LABEL = re.compile(r"PROJECT(?:\s+NAME)?\s*[:\-]\s*(.+)", re.IGNORECASE)
-_STREET = re.compile(
-    r"\d{2,5}(?:\s*[\-–]\s*\d{2,5})?\s+[A-Z0-9][A-Z0-9.'\- ]{1,40}\s+"
-    r"(?:AVENUE|AVE|STREET|ST|ROAD|RD|BOULEVARD|BLVD|DRIVE|DR|LANE|LN|WAY|COURT|CT)\b",
+_STREET_SUFFIX = r"(?:AVENUE|AVE|STREET|BOULEVARD|BLVD|DRIVE|DR|LANE|LN|COURT|CT|ROAD|WAY)"
+_STREET_LINE = re.compile(
+    rf"\b(\d{{2,5}}(?:[ \t]*[-–][ \t]*\d{{2,5}})?[ \t]+"
+    rf"(?:[A-Z0-9][A-Z0-9.'\-]*[ \t]+){{1,6}}"
+    rf"(?:{_STREET_SUFFIX}))\b",
     re.IGNORECASE,
 )
+_STREET_ALIAS = {
+    "AVE": "AVENUE",
+    "BLVD": "BOULEVARD",
+    "DR": "DRIVE",
+    "LN": "LANE",
+    "CT": "COURT",
+    "RD": "ROAD",
+}
+
+
+def _street_name(value: str) -> str:
+    parts = value.upper().split()
+    if parts and parts[-1] in _STREET_ALIAS:
+        parts[-1] = _STREET_ALIAS[parts[-1]]
+    return " ".join(parts)
+
+
+def _street_scores(text: str) -> dict[str, int]:
+    """Site address scores above the client and the architect in the same title block."""
+    scores: dict[str, int] = {}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        for match in _STREET_LINE.finditer(line):
+            name = _street_name(match.group(1))
+            before = " ".join(lines[max(0, index - 4) : index]).upper()
+            after = " ".join(lines[index + 1 : index + 3]).upper()
+            score = 1
+            if re.search(r"\d-\d", name):
+                score += 2
+            if any(word in after for word in ("PROPOSED", "DEVELOPMENT", "APARTMENT", "RESIDENCE")):
+                score += 5
+            if "CLIENT" in before:
+                score -= 6
+            if "COPYRIGHT" in before or "PROTECTED" in before or "TEL" in before:
+                score -= 4
+            scores[name] = scores.get(name, 0) + score
+    return scores
 
 
 def project_identities(rows: list[dict[str, Any]]) -> list[str]:
     """
     One project name for this upload.
 
-    A project label and a street on the same set are one project. Two different
-    project labels, or two different streets when no label is printed, stay apart.
+    A project label is the name. A title block that also prints the client and
+    the architect is still one project. Two project labels, or two site streets
+    that never share a sheet, stay apart.
     """
     labeled: dict[str, int] = {}
-    streets: dict[str, int] = {}
     for row in rows:
-        text = row.get("text") or ""
-        for line in text.splitlines():
+        for line in (row.get("text") or "").splitlines():
             match = _PROJECT_LABEL.search(line.strip())
             if not match:
                 continue
             name = " ".join(match.group(1).split())
             if 3 < len(name) < 80:
                 labeled[name] = labeled.get(name, 0) + 1
-        for match in _STREET.finditer(text):
-            name = " ".join(match.group(0).split())
-            streets[name.upper()] = streets.get(name.upper(), 0) + 1
-    if len(labeled) > 1:
+    if labeled:
         return list(labeled)
-    if len(labeled) == 1:
-        return list(labeled)
-    return list(streets)
+
+    chosen: list[str] = []
+    fallback: dict[str, int] = {}
+    for row in rows:
+        scores = _street_scores(row.get("text") or "")
+        if not scores:
+            continue
+        best = max(scores, key=lambda name: (scores[name], len(name)))
+        for name in scores:
+            fallback[name] = fallback.get(name, 0) + 1
+        if scores[best] > 0 and all(scores[other] < scores[best] for other in scores if other != best):
+            chosen.append(best)
+    unique = list(dict.fromkeys(chosen))
+    if unique:
+        return unique
+    if not fallback:
+        return []
+    winner = sorted(fallback, key=lambda name: (fallback[name], len(name)), reverse=True)[0]
+    return [winner]
 
 
 def _project_name(rows: list[dict[str, Any]]) -> str:
@@ -563,7 +761,13 @@ def _images_for_role(role: str, data: bytes) -> list[tuple[str, bytes]]:
 
 
 def _matrix_tiles(data: bytes, columns: int = 3, rows: int = 3) -> list[bytes]:
-    """Overlapping crops so a unit row on a tile edge is still readable."""
+    """
+    One crop per scanned table, upright.
+
+    A full-sheet grid spends most of its calls on blank paper and cuts rows
+    in half. A table embedded as an image is cropped on its own. A vector
+    matrix still uses the grid, and a nearly blank cell is left out.
+    """
     try:
         import fitz
     except Exception:
@@ -574,25 +778,117 @@ def _matrix_tiles(data: bytes, columns: int = 3, rows: int = 3) -> list[bytes]:
             doc.close()
             return []
         page = doc[0]
-        rect = page.rect
-        overlap = 0.06
-        tiles: list[bytes] = []
-        for row in range(rows):
-            for column in range(columns):
-                x0 = rect.width * max(0.0, column / columns - overlap)
-                y0 = rect.height * max(0.0, row / rows - overlap)
-                x1 = rect.width * min(1.0, (column + 1) / columns + overlap)
-                y1 = rect.height * min(1.0, (row + 1) / rows + overlap)
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(1.7, 1.7),
-                    clip=fitz.Rect(x0, y0, x1, y1),
-                    alpha=False,
-                )
-                tiles.append(pix.tobytes("jpeg", jpg_quality=68))
+        tiles = _table_image_tiles(page)
+        if not tiles:
+            tiles = _grid_tiles(page, columns, rows)
         doc.close()
         return tiles
     except Exception:
         return []
+
+
+def _table_image_tiles(page) -> list[bytes]:
+    import fitz
+
+    rotation = page.rotation
+    order = page.rotation_matrix
+    boxes = []
+    for info in page.get_image_info():
+        if min(info.get("width") or 0, info.get("height") or 0) < 900:
+            continue
+        box = fitz.Rect(info["bbox"]) & page.mediabox
+        if box.width < 80 or box.height < 80:
+            continue
+        if box.width > page.mediabox.width * 0.92 and box.height > page.mediabox.height * 0.92:
+            continue
+        boxes.append(box)
+    kept: list[Any] = []
+    for box in sorted(boxes, key=lambda item: item.width * item.height, reverse=True):
+        area = box.width * box.height
+        if any(_rect_area(fitz.Rect(box) & other) > 0.85 * area for other in kept):
+            continue
+        kept.append(box)
+    if not kept:
+        return []
+
+    def _reading_order(box: Any) -> tuple[float, float]:
+        center = fitz.Point((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2) * order
+        return (center.y, center.x)
+
+    page.set_rotation(0)
+    tiles = []
+    ordered = sorted(kept, key=_reading_order)
+    for box in ordered:
+        longer = max(box.width, box.height) or 1
+        scale = min(2.0, 1700 / longer)
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=box, alpha=False)
+        if pix.width < 40 or pix.height < 40:
+            continue
+        tiles.append(_upright_jpeg(pix, rotation))
+    if not tiles:
+        page.set_rotation(rotation)
+    return tiles
+
+
+def _rect_area(rect) -> float:
+    return max(rect.width, 0.0) * max(rect.height, 0.0)
+
+
+def _upright_jpeg(pix, rotation: int) -> bytes:
+    turns = rotation % 360
+    if turns == 0:
+        return pix.tobytes("jpeg", jpg_quality=68)
+    try:
+        from PIL import Image
+    except Exception:
+        return pix.tobytes("jpeg", jpg_quality=68)
+    import io
+
+    mode = "RGB" if pix.n >= 3 else "L"
+    image = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+    image = image.transpose(
+        {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}[turns]
+    )
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=68)
+    return buffer.getvalue()
+
+
+def _grid_tiles(page, columns: int, rows: int) -> list[bytes]:
+    import fitz
+
+    rect = page.rect
+    overlap = 0.06
+    tiles: list[bytes] = []
+    for row in range(rows):
+        for column in range(columns):
+            x0 = rect.width * max(0.0, column / columns - overlap)
+            y0 = rect.height * max(0.0, row / rows - overlap)
+            x1 = rect.width * min(1.0, (column + 1) / columns + overlap)
+            y1 = rect.height * min(1.0, (row + 1) / rows + overlap)
+            pix = page.get_pixmap(
+                matrix=fitz.Matrix(1.7, 1.7),
+                clip=fitz.Rect(x0, y0, x1, y1),
+                alpha=False,
+            )
+            if _ink_fraction(pix) < 0.012:
+                continue
+            tiles.append(pix.tobytes("jpeg", jpg_quality=68))
+    return tiles
+
+
+def _ink_fraction(pix) -> float:
+    samples = pix.samples
+    step = max(pix.n, 1) * 8
+    dark = 0
+    total = 0
+    for index in range(0, len(samples), step):
+        total += 1
+        if samples[index] < 245:
+            dark += 1
+    if not total:
+        return 0.0
+    return dark / total
 
 
 def _render_jpeg(data: bytes, max_edge: int = 1400) -> Optional[bytes]:

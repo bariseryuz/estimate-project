@@ -48,7 +48,8 @@ def count_plan_openings(data: bytes) -> Optional[dict[str, Any]]:
         doc.close()
         return None
     box = _plan_box(rooms, title, page.rect.width)
-    window_rects, door_rects = _mark_rects(page)
+    window_marks, door_rects = _mark_rects(page)
+    window_rects = [rect for rect, _kinds in window_marks]
     window_hits = []
     door_hits = []
     for word in words:
@@ -78,7 +79,10 @@ def count_plan_openings(data: bytes) -> Optional[dict[str, Any]]:
     window_hits = _dedupe(window_hits)
     door_hits = _dedupe(door_hits)
     openings = _assemblies(window_hits, window_rects)
-    untagged = _untagged(window_rects, window_hits, box, words, rooms, page.rotation_matrix)
+    untagged = _untagged(window_marks, window_hits, box, words, rooms, page.rotation_matrix)
+    preview = _marked_preview(page, openings + [
+        {"bounding_box": item.get("bounding_box")} for item in untagged
+    ])
     doc.close()
     windows = len(openings) + len(untagged)
     shades = sum(1 for opening in openings if not str(opening["room"]).startswith("BATH"))
@@ -91,12 +95,43 @@ def count_plan_openings(data: bytes) -> Optional[dict[str, Any]]:
         "openings": openings,
         "doors": [{"tag": hit["tag"], "room": hit["room"]} for hit in door_hits],
         "untagged": untagged,
+        "preview": preview,
         "notes": (
             "Each window tag on the unit floor plan is one opening. "
             "A reflected ceiling plan, elevation, or detail is not a second opening. "
             "Square door tags are doors. A shade quantity is not assigned here."
         ),
     }
+
+
+def _marked_preview(page, openings: list[dict[str, Any]]) -> str:
+    """A small picture of the sheet with each counted bubble circled."""
+    import base64
+
+    import fitz
+
+    try:
+        clone = fitz.open()
+        clone.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+        drawn = clone[0]
+        shape = drawn.new_shape()
+        inverse = ~page.rotation_matrix
+        for opening in openings:
+            box = opening.get("bounding_box") or []
+            if len(box) < 2:
+                continue
+            point = fitz.Point(box[0], box[1]) * inverse
+            shape.draw_circle(point, 14)
+        shape.finish(color=(0.75, 0.1, 0.1), width=1.5)
+        shape.commit()
+        longest = max(drawn.rect.width, drawn.rect.height) or 1
+        zoom = min(1.0, 1100 / longest)
+        pix = drawn.get_pixmap(matrix=fitz.Matrix(zoom, zoom) * drawn.rotation_matrix, alpha=False)
+        jpeg = pix.tobytes("jpeg", jpg_quality=55)
+        clone.close()
+        return base64.b64encode(jpeg).decode("ascii")
+    except Exception:
+        return ""
 
 
 def _visual_words(page) -> list[dict[str, Any]]:
@@ -163,25 +198,30 @@ def _plan_box(rooms: list[dict[str, Any]], title: dict[str, Any], page_width: fl
     return fitz.Rect(x0, y0, x1, y1)
 
 
-def _mark_rects(page) -> tuple[list[Any], list[Any]]:
+def _mark_rects(page) -> tuple[list[tuple[Any, str]], list[Any]]:
+    import fitz
+
     windows = []
     doors = []
-    for drawing in page.get_drawings():
-        rect = drawing.get("rect")
-        if rect is None:
+    drawings = page.get_cdrawings() if hasattr(page, "get_cdrawings") else page.get_drawings()
+    for drawing in drawings:
+        raw = drawing.get("rect")
+        if raw is None:
             continue
-        kind = _shape_kind(rect.width, rect.height, drawing.get("items") or [])
+        rect = raw if hasattr(raw, "contains") else fitz.Rect(raw)
+        items = drawing.get("items") or []
+        kinds = "".join(item[0] for item in items)
+        kind = _shape_kind(rect.width, rect.height, kinds)
         if kind == "window":
-            windows.append(rect)
+            windows.append((rect, kinds))
         elif kind == "door":
             doors.append(rect)
     return windows, doors
 
 
-def _shape_kind(width: float, height: float, items: list) -> Optional[str]:
+def _shape_kind(width: float, height: float, kinds: str) -> Optional[str]:
     if width > 52 or height > 52 or width < 8 or height < 8:
         return None
-    kinds = "".join(item[0] for item in items)
     if kinds in {"l", "ll"} and max(width, height) <= 14:
         return None
     if abs(width - height) <= 3.5 and 8 <= width <= 22 and (kinds.startswith("q") or kinds == "re"):
@@ -237,18 +277,22 @@ def _assemblies(hits: list[dict[str, Any]], window_rects: list[Any]) -> list[dic
     return openings
 
 
-def _untagged(window_rects, hits, box, words, rooms, matrix) -> list[dict[str, Any]]:
+def _untagged(window_marks, hits, box, words, rooms, matrix) -> list[dict[str, Any]]:
     """An empty tag bubble is an opening with no mark. Other geometry is not a guess."""
     import fitz
 
     tagged = []
-    for rect in window_rects:
+    tagged_kinds = set()
+    for rect, kinds in window_marks:
         if any(rect.contains(fitz.Point(hit["ux"], hit["uy"])) for hit in hits):
             tagged.append(rect)
+            tagged_kinds.add(kinds)
     if not tagged:
         return []
     found = []
-    for rect in window_rects:
+    for rect, kinds in window_marks:
+        if kinds not in tagged_kinds:
+            continue
         if any(rect.contains(fitz.Point(hit["ux"], hit["uy"])) for hit in hits):
             continue
         if not any(abs(rect.width - known.width) <= 4 and abs(rect.height - known.height) <= 4 for known in tagged):

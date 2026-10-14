@@ -5,19 +5,62 @@ import unittest
 from agents.estimation_agent import _unpriced_drawing_estimate
 from agents.validation import _drawing_set_validation
 
+from pathlib import Path
+
 from domain.drawing_set import (
+    _matrix_tiles,
+    accept_matrix_table,
     apply_printed_unit_types,
     classify_sheet,
     combine_counts,
     filenames_needing_text,
     merge_unit_rows,
+    project_identities,
     norm_type,
     type_from_filename,
     unit_types_from_floor_plans,
 )
 
+_ARCH = Path("/Users/bariseryuz/Desktop/Architectural")
+
 
 class TestDrawingSet(unittest.TestCase):
+    def test_a_title_block_with_client_and_architect_is_one_project(self):
+        madeira = "\n".join(
+            [
+                "CLIENT INFORMATION:",
+                "URBAN 301 MADEIRA, L.L.C.",
+                "2875 N.E. 191th STREET",
+                "301-341 MADEIRA AVENUE, CORAL GABLES, FLORIDA, 33134",
+                "301-341 MADEIRA AVE",
+                "PROPOSED RENTAL APARTMENTS DEVELOPMENT",
+                "4533 PONCE DE LEON BLVD.",
+                "TEL : (305) 740 5442",
+            ]
+        )
+        central = "\n".join(
+            [
+                "100 CENTRAL POINTE BOULEVARD",
+                "PROPOSED APARTMENTS",
+            ]
+        )
+        self.assertEqual(
+            project_identities([{"text": madeira}, {"text": madeira}]),
+            ["301-341 MADEIRA AVENUE"],
+        )
+        self.assertEqual(
+            project_identities([{"text": madeira}, {"text": central}]),
+            ["301-341 MADEIRA AVENUE", "100 CENTRAL POINTE BOULEVARD"],
+        )
+
+    def test_a_scanned_unit_matrix_is_cropped_to_its_tables(self):
+        path = _ARCH / "A-0.04.1-UPDATED-UNIT-MATRIX-Rev.Permit.pdf"
+        if not path.exists():
+            self.skipTest("supplied unit matrix is not on this machine")
+        tiles = _matrix_tiles(path.read_bytes())
+        self.assertEqual(len(tiles), 4)
+        self.assertTrue(all(len(tile) > 8000 for tile in tiles))
+
     def test_sheet_roles_follow_the_title(self):
         self.assertEqual(classify_sheet("A-0.04.1-UPDATED-UNIT-MATRIX.pdf", ""), "unit_matrix")
         self.assertEqual(classify_sheet("A-4.00-UNIT-A-1-a-Rev.Permit.pdf", ""), "unit_plan")
@@ -62,6 +105,20 @@ class TestDrawingSet(unittest.TestCase):
             [{"units": [{"unit": "401", "type": "3BR+2BATH", "qty": 1}, {"unit": "99999", "type": "A-1", "qty": 1}]}]
         )
         self.assertEqual(rejected["transcribedUnits"], 0)
+
+    def test_a_floor_subtotal_is_not_the_building_total(self):
+        merged = merge_unit_rows(
+            [
+                {
+                    "units": [{"unit": str(200 + index), "type": "A-2", "qty": 1} for index in range(30)],
+                    "printedTotals": [15, 17],
+                    "floorTotals": [{"floor": "2", "total": 15}],
+                }
+            ]
+        )
+        self.assertEqual(merged["transcribedUnits"], 30)
+        self.assertIsNone(merged["printedTotal"])
+        self.assertEqual(merged["floorTotals"], [{"floor": "2", "total": 15}])
 
     def test_opening_count_is_units_times_openings_on_that_plan(self):
         combined = combine_counts(
@@ -212,6 +269,41 @@ class TestDrawingSet(unittest.TestCase):
         self.assertEqual(result["recommendation"], "Approved")
         self.assertFalse(result["readyToSendOffer"])
         self.assertEqual(result["crossChecks"][0]["match"], True)
+
+    def test_a_matching_floor_subtotal_is_accepted(self):
+        merged = merge_unit_rows(
+            [
+                {
+                    "units": [
+                        {"unit": "201", "type": "A-1", "qty": 1, "floor": "2ND FLOOR"},
+                        {"unit": "202", "type": "A-1", "qty": 1, "floor": "2"},
+                        {"unit": "203", "type": "B-1", "qty": 1, "floor": "2"},
+                    ],
+                    "floorTotals": [{"floor": "2", "total": 3}],
+                    "printedTotals": [3],
+                }
+            ]
+        )
+        gate = accept_matrix_table(merged)
+        self.assertTrue(gate["ready"])
+        self.assertEqual(sum(row["count"] for row in gate["types"]), 3)
+
+    def test_a_floor_total_of_17_does_not_multiply_135_rows(self):
+        merged = merge_unit_rows(
+            [
+                {
+                    "units": [{"unit": str(200 + index), "type": "A-2", "qty": 1} for index in range(135)],
+                    "printedTotals": [17],
+                    "floorTotals": [{"floor": "2", "total": 17}],
+                }
+            ]
+        )
+        self.assertIsNone(merged["printedTotal"])
+        self.assertIn(17, merged["rejectedPrintedTotals"])
+        gate = accept_matrix_table(merged)
+        self.assertFalse(gate["ready"])
+        self.assertEqual(gate["types"], [])
+        self.assertEqual(gate["units"], [])
 
 
 if __name__ == "__main__":
